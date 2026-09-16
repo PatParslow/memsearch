@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>memsearch graph</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>memsearch graph</h1>
+  <input id="search-box" type="search" placeholder="filter by title / keyword...">
+  <select id="project-filter"><option value="">all projects</option></select>
+  <label class="chk"><input type="checkbox" id="kind-prose" checked> prose</label>
+  <label class="chk"><input type="checkbox" id="kind-conversation" checked> conversations</label>
+  <label class="chk"><input type="checkbox" id="kind-code"> code</label>
+  <button id="link-mode-btn" title="Click two nodes to draw a manual link between them">Draw link</button>
+  <span id="status-line"></span>
+</header>
+
+<main>
+  <div id="map-wrap">
+    <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="hover-banner"></div>
+  </div>
+
+  <aside id="sidebar">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="node">Node</button>
+      <button class="tab-btn" data-tab="gaps">Gaps</button>
+    </div>
+
+    <div id="tab-node" class="tab-panel active">
+      <p class="muted" id="node-empty">Click a node on the map to inspect it.</p>
+      <div id="node-detail" style="display:none">
+        <h2 id="nd-title"></h2>
+        <p id="nd-meta" class="muted"></p>
+        <p id="nd-keywords"></p>
+        <p><a id="nd-open-source" href="#" target="_blank" rel="noopener">Open source file &#8599;</a></p>
+        <h3>Notes</h3>
+        <div id="nd-notes"></div>
+        <textarea id="nd-note-text" placeholder="Add a note about this node..."></textarea>
+        <button id="nd-note-save">Save note</button>
+      </div>
+    </div>
+
+    <div id="tab-gaps" class="tab-panel">
+      <p class="muted">Auto-detected + manually flagged gaps in the map. Dismiss ones that aren't useful.</p>
+      <div id="gaps-list"></div>
+    </div>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

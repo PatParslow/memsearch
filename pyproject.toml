@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memsearch"
+version = "0.1.0"
+description = "Content-aware project + conversation mining and semantic search across all projects."
+requires-python = ">=3.10"
+dependencies = [
+    "chromadb",
+    "beautifulsoup4",
+    "lxml",
+    "pymupdf",
+    "networkx",
+    "scipy",
+]
+
+[project.scripts]
+memsearch = "memsearch.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["memsearch*"]
+
+[tool.setuptools.package-data]
+memsearch = ["web/*"]

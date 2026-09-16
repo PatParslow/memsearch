@@ -1,0 +1,89 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: #12161c; color: #d7dee6;
+  font: 14px/1.4 -apple-system, Segoe UI, sans-serif;
+}
+
+#topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: #1a2028; border-bottom: 1px solid #2a323c;
+}
+#topbar h1 { font-size: 15px; margin: 0; font-weight: 600; color: #9fc9ff; white-space: nowrap; }
+#topbar input, #topbar select {
+  background: #0e1116; color: #d7dee6; border: 1px solid #2a323c; border-radius: 4px;
+  padding: 5px 8px; font-size: 13px;
+}
+#search-box { width: 220px; }
+.chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #a9b3bd; white-space: nowrap; }
+#link-mode-btn {
+  background: #223047; color: #9fc9ff; border: 1px solid #35486a; border-radius: 4px;
+  padding: 5px 10px; cursor: pointer; font-size: 12px;
+}
+#link-mode-btn.active { background: #3a5a2f; border-color: #5a8a4a; color: #cdeec0; }
+#status-line { margin-left: auto; color: #7a8494; font-size: 12px; }
+
+main { display: flex; height: calc(100% - 44px); }
+#map-wrap { flex: 1; position: relative; overflow: hidden; background: #0e1116; }
+#map { width: 100%; height: 100%; cursor: grab; }
+#map.dragging { cursor: grabbing; }
+
+.territory-hull { stroke-width: 1.5; fill-opacity: 0.10; stroke-opacity: 0.55; vector-effect: non-scaling-stroke; }
+.territory-label { fill: #7a8494; pointer-events: none; text-anchor: middle; }
+
+.road-line { stroke: #3a4452; stroke-width: 1; stroke-dasharray: 2 3; fill: none; vector-effect: non-scaling-stroke; }
+.manual-link-line { stroke: #e0a458; stroke-width: 1.6; stroke-dasharray: 5 3; fill: none; vector-effect: non-scaling-stroke; }
+.gap-line { stroke: #c96a6a; stroke-width: 1.2; stroke-dasharray: 1 4; fill: none; opacity: 0.7; vector-effect: non-scaling-stroke; }
+.gap-marker { fill: #c96a6a; opacity: 0.85; }
+
+.atlas-node circle { stroke: #0e1116; stroke-width: 1.2; cursor: pointer; vector-effect: non-scaling-stroke; }
+.atlas-node text { fill: #cdd6df; pointer-events: none; display: none; }
+.atlas-node.hovered text, .atlas-node.selected text { display: block; }
+.atlas-node.selected circle { stroke: #ffd166; stroke-width: 2.5; }
+.atlas-node.dimmed { opacity: 0.15; }
+.atlas-node.link-pending circle { stroke: #6ee7b7; stroke-width: 2.5; }
+
+#hover-banner {
+  position: absolute; left: 12px; bottom: 12px; max-width: 60%;
+  background: rgba(20, 25, 32, 0.92); border: 1px solid #2a323c; border-radius: 6px;
+  padding: 8px 12px; font-size: 12.5px; color: #cdd6df; display: none; pointer-events: none;
+}
+
+#sidebar {
+  width: 340px; flex-shrink: 0; background: #161b22; border-left: 1px solid #2a323c;
+  padding: 12px; overflow-y: auto;
+}
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.tab-btn {
+  flex: 1; background: #0e1116; color: #a9b3bd; border: 1px solid #2a323c; border-radius: 4px;
+  padding: 6px; cursor: pointer; font-size: 12.5px;
+}
+.tab-btn.active { background: #223047; color: #9fc9ff; border-color: #35486a; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.muted { color: #7a8494; font-size: 12.5px; }
+#nd-title { font-size: 15px; margin: 4px 0; color: #9fc9ff; word-break: break-word; }
+#nd-meta { margin: 0 0 6px; }
+#nd-keywords { font-size: 12px; color: #a9b3bd; }
+#nd-notes { margin: 6px 0; }
+.note-item {
+  background: #0e1116; border: 1px solid #2a323c; border-radius: 4px;
+  padding: 6px 8px; margin-bottom: 6px; font-size: 12.5px; white-space: pre-wrap;
+}
+.note-item .note-date { color: #6a7482; font-size: 11px; margin-top: 3px; }
+#nd-note-text { width: 100%; min-height: 60px; background: #0e1116; color: #d7dee6; border: 1px solid #2a323c; border-radius: 4px; padding: 6px; font: inherit; resize: vertical; }
+#nd-note-save {
+  margin-top: 6px; background: #223047; color: #9fc9ff; border: 1px solid #35486a; border-radius: 4px;
+  padding: 5px 12px; cursor: pointer; font-size: 12.5px;
+}
+
+.gap-item {
+  background: #0e1116; border: 1px solid #2a323c; border-radius: 4px;
+  padding: 8px; margin-bottom: 8px; font-size: 12.5px;
+}
+.gap-item .gap-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #c96a6a; }
+.gap-item button {
+  margin-top: 6px; background: #1e2530; color: #a9b3bd; border: 1px solid #2a323c; border-radius: 4px;
+  padding: 4px 9px; cursor: pointer; font-size: 11.5px;
+}

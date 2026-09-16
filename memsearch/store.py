@@ -96,6 +96,29 @@ def search(col, query: str, n_results: int = 5, where: dict | None = None) -> li
     return hits
 
 
+def delete_path_prefix(path_prefix: str, store_path: str = DEFAULT_STORE_PATH) -> int:
+    """Delete every chunk whose source_file starts with the given path --
+    for removing a directory from scope after the fact (files still exist
+    on disk, so prune_missing() won't touch them; this is the explicit
+    opt-out counterpart to mine's --exclude)."""
+    col = get_collection(store_path)
+    total = col.count()
+    batch_size = 5000
+    offset = 0
+    prefix = str(Path(path_prefix))
+    stale_ids: list[str] = []
+    while offset < total:
+        batch = col.get(limit=batch_size, offset=offset, include=["metadatas"])
+        for id_, m in zip(batch["ids"], batch["metadatas"]):
+            sf = m.get("source_file", "")
+            if sf.startswith(prefix):
+                stale_ids.append(id_)
+        offset += batch_size
+    for i in range(0, len(stale_ids), batch_size):
+        col.delete(ids=stale_ids[i : i + batch_size])
+    return len(stale_ids)
+
+
 def prune_missing(store_path: str = DEFAULT_STORE_PATH) -> dict:
     """Delete every chunk whose source_file no longer exists on disk.
     File-existence is checked once per distinct source_file (a file can

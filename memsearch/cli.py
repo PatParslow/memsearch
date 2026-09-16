@@ -82,6 +82,11 @@ def cmd_prune(args):
     print(f"Chunks deleted: {stats['chunks_deleted']}")
 
 
+def cmd_unmine(args):
+    n = store.delete_path_prefix(args.path)
+    print(f"\nDeleted {n} chunks under {args.path}")
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -128,6 +133,10 @@ def main():
 
     p_prune = sub.add_parser("prune", help="Delete chunks for files that no longer exist on disk")
     p_prune.set_defaults(func=cmd_prune)
+
+    p_unmine = sub.add_parser("unmine", help="Delete all chunks whose source_file starts with a given path")
+    p_unmine.add_argument("path")
+    p_unmine.set_defaults(func=cmd_unmine)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

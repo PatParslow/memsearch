@@ -14,6 +14,10 @@
   <label class="chk"><input type="checkbox" id="kind-conversation" checked> conversations</label>
   <label class="chk"><input type="checkbox" id="kind-code"> code</label>
   <button id="link-mode-btn" title="Click two nodes to draw a manual link between them">Draw link</button>
+  <span class="view-toggle">
+    <button id="view-map-btn" class="view-btn active" data-view="map">Map</button>
+    <button id="view-mindmap-btn" class="view-btn" data-view="mindmap">Mindmap</button>
+  </span>
   <span id="status-line"></span>
 </header>
 
@@ -21,6 +25,9 @@
   <div id="map-wrap">
     <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
     <div id="hover-banner"></div>
+  </div>
+  <div id="mindmap-wrap" style="display:none">
+    <ul id="mindmap-root"></ul>
   </div>
 
   <aside id="sidebar">

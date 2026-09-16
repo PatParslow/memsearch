@@ -36,7 +36,16 @@ PROJECT_DIRS = [
     r"F:\storyline",
     r"F:\papers",
     r"F:\PatLang-PDF",
+    r"F:\books",
 ]
+
+# Per-directory --exclude value, for subdirectories that are dev-scratch
+# noise rather than real content (see memsearch-graph-and-prune memory:
+# a batch of ~600 AI-drafted, never-reviewed articles with unverified
+# placeholder citations was found dominating cluster labels sitewide).
+EXCLUDE_DIRS = {
+    r"D:\Projects_Organized\parslow-soft-editorial": "overnight_runs",
+}
 
 LOG_DIR = Path(__file__).parent / "logs"
 
@@ -69,7 +78,10 @@ def main() -> None:
 
         failures = []
         for d in PROJECT_DIRS:
-            if run(["mine", d], log_file) != 0:
+            args = ["mine", d]
+            if d in EXCLUDE_DIRS:
+                args += ["--exclude", EXCLUDE_DIRS[d]]
+            if run(args, log_file) != 0:
                 failures.append(d)
         if run(["mine-convos"], log_file) != 0:
             failures.append("mine-convos")

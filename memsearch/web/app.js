@@ -11,6 +11,8 @@
   let selectedNodeId = null;
   let linkMode = false;
   let linkPending = null;
+  let currentView = "map";
+  const mindmapExpanded = new Set(["root"]);
 
   const filters = { search: "", project: "", prose: true, conversation: true, code: false };
 
@@ -33,6 +35,7 @@
     statusLine.textContent = `${graphData.nodes.length} nodes, ${graphData.clusters.length} clusters, ${graphData.roads.length} roads`;
     fitView();
     render();
+    buildMindmap();
   }
 
   function populateProjectFilter() {
@@ -94,7 +97,7 @@
         class: "territory-label", x: c.centroid[0], y: c.centroid[1],
         "font-size": TERRITORY_FONT_BASE,
       });
-      label.textContent = c.label;
+      label.textContent = c.llm_title || c.label;
       viewport.appendChild(label);
     }
 
@@ -249,6 +252,7 @@
     }
     selectedNodeId = n.id;
     render();
+    highlightMindmapSelection();
     await showNodeDetail(n);
   }
 
@@ -349,6 +353,91 @@
     await loadGraph();
   }
 
+  // ---- mindmap (collapsible outline over real agglomerative clustering) ----
+
+  function buildMindmap() {
+    const root = document.getElementById("mindmap-root");
+    root.innerHTML = "";
+    if (!graphData || !graphData.hierarchy) {
+      root.innerHTML = '<p class="muted">No hierarchy data -- rebuild the graph.</p>';
+      return;
+    }
+    root.appendChild(hierarchyNodeToLi(graphData.hierarchy, "root"));
+    applyMindmapFilters();
+  }
+
+  function hierarchyNodeToLi(node, path) {
+    const li = document.createElement("li");
+    if (node.kind === "leaf") {
+      const n = nodesById.get(node.node_id);
+      if (!n) { li.style.display = "none"; return li; }
+      li.className = "mm-leaf";
+      li.dataset.id = n.id;
+      const title = document.createElement("span");
+      title.className = "mm-title";
+      title.textContent = n.title;
+      const meta = document.createElement("span");
+      meta.className = "mm-meta";
+      meta.textContent = `${n.project} · ${n.kind}`;
+      li.append(title, meta);
+      li.addEventListener("click", (ev) => { ev.stopPropagation(); onNodeClick(n); highlightMindmapSelection(); });
+      return li;
+    }
+    li.className = "mm-group-li";
+    const details = document.createElement("details");
+    details.open = mindmapExpanded.has(path);
+    details.addEventListener("toggle", () => {
+      if (details.open) mindmapExpanded.add(path); else mindmapExpanded.delete(path);
+    });
+    const summary = document.createElement("summary");
+    summary.textContent = `${node.llm_title || node.label} (${node.size})`;
+    summary.title = node.llm_title ? `keywords: ${node.label}` : "";
+    details.appendChild(summary);
+    const ul = document.createElement("ul");
+    node.children.forEach((child, i) => ul.appendChild(hierarchyNodeToLi(child, `${path}.${i}`)));
+    details.appendChild(ul);
+    li.appendChild(details);
+    return li;
+  }
+
+  // Walks the already-built outline DOM (not the raw hierarchy JSON) so
+  // filtering never disturbs which <details> the user has expanded --
+  // matches the SVG map's own dimmed/hidden-node approach, just via
+  // display:none instead of an opacity class.
+  function applyMindmapFilters() {
+    const root = document.getElementById("mindmap-root");
+    if (!root) return;
+    for (const leafLi of root.querySelectorAll(".mm-leaf")) {
+      const n = nodesById.get(leafLi.dataset.id);
+      leafLi.classList.toggle("mm-hidden", !n || !nodeVisible(n));
+    }
+    for (const groupLi of [...root.querySelectorAll(".mm-group-li")].reverse()) {
+      const anyVisible = groupLi.querySelector(".mm-leaf:not(.mm-hidden)");
+      groupLi.classList.toggle("mm-hidden", !anyVisible);
+    }
+  }
+
+  function highlightMindmapSelection() {
+    const root = document.getElementById("mindmap-root");
+    if (!root) return;
+    for (const leafLi of root.querySelectorAll(".mm-leaf")) {
+      leafLi.classList.toggle("selected", leafLi.dataset.id === selectedNodeId);
+    }
+  }
+
+  function setView(view) {
+    currentView = view;
+    document.getElementById("map-wrap").style.display = view === "map" ? "" : "none";
+    document.getElementById("mindmap-wrap").style.display = view === "mindmap" ? "" : "none";
+    for (const btn of document.querySelectorAll(".view-btn")) {
+      btn.classList.toggle("active", btn.dataset.view === view);
+    }
+    if (view === "mindmap") applyMindmapFilters();
+  }
+
+  document.getElementById("view-map-btn").addEventListener("click", () => setView("map"));
+  document.getElementById("view-mindmap-btn").addEventListener("click", () => setView("mindmap"));
+
   // ---- pan / zoom ----
 
   let dragging = false, dragStart = null;
@@ -387,14 +476,16 @@
   document.getElementById("search-box").addEventListener("input", (ev) => {
     filters.search = ev.target.value;
     render();
+    applyMindmapFilters();
   });
   document.getElementById("project-filter").addEventListener("change", (ev) => {
     filters.project = ev.target.value;
     render();
+    applyMindmapFilters();
   });
-  document.getElementById("kind-prose").addEventListener("change", (ev) => { filters.prose = ev.target.checked; render(); });
-  document.getElementById("kind-conversation").addEventListener("change", (ev) => { filters.conversation = ev.target.checked; render(); });
-  document.getElementById("kind-code").addEventListener("change", (ev) => { filters.code = ev.target.checked; render(); });
+  document.getElementById("kind-prose").addEventListener("change", (ev) => { filters.prose = ev.target.checked; render(); applyMindmapFilters(); });
+  document.getElementById("kind-conversation").addEventListener("change", (ev) => { filters.conversation = ev.target.checked; render(); applyMindmapFilters(); });
+  document.getElementById("kind-code").addEventListener("change", (ev) => { filters.code = ev.target.checked; render(); applyMindmapFilters(); });
 
   document.getElementById("link-mode-btn").addEventListener("click", (ev) => {
     linkMode = !linkMode;

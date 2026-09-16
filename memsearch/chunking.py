@@ -88,6 +88,18 @@ def chunk_html(text: str) -> list[str]:
     """Split on heading boundaries, then bound each section's size.
     Blobs (embedded WASM/base64/etc.) are dropped, not chunked."""
     soup = BeautifulSoup(text, "lxml")
+
+    # parslow.net's own build.py generates a "This page has moved to X."
+    # redirect stub (render_redirect(), always titled exactly "Moved") for
+    # every renamed/relocated page -- ~116 of them site-wide, all near-
+    # identical apart from the target path. Mining them as prose added no
+    # real searchable content and dominated cluster-label word frequency
+    # sitewide ("topics"/"page"/"moved" winning nearly every large-group
+    # label vote). The old URL is still fully searchable via source_file.
+    title = soup.title
+    if title and title.get_text(strip=True) == "Moved":
+        return []
+
     for tag in soup.find_all(["script", "style"]):
         tag.decompose()
 

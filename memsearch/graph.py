@@ -16,14 +16,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
+from scipy.cluster.hierarchy import linkage, to_tree
 from scipy.spatial import ConvexHull
 
 from . import store
@@ -38,6 +41,15 @@ KEYWORDS_PER_NODE = 8
 PAIR_Z_MIN, PAIR_Z_MAX = 0.5, 2.5
 FRONTIER_EXTRAPOLATE = 1.6
 MAX_GAPS_PER_KIND = 40
+HIERARCHY_FLATTEN_BELOW = 4
+HIERARCHY_FANOUT = 8
+
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2:latest"
+OLLAMA_TIMEOUT = 20
+LLM_TITLE_SAMPLE_SIZE = 10
+LABEL_MAX_DF_FRACTION = 0.08
 
 TERRITORY_COLORS = [
     "#7aa2c9", "#c98a7a", "#8ac97a", "#c9b17a", "#a67ac9",
@@ -55,6 +67,7 @@ very what when where which while who whom why your yours yourself
 their theirs them there they're we're you're i'm i've you've we've
 also like one two three get gets got using used use uses via
 doi https http org com www pdf arxiv isbn issn vol pp ed eds
+now let's
 """.split())
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z\-']{2,}")
@@ -73,13 +86,103 @@ def _node_title(source_file: str, kind: str) -> str:
 
 
 def _top_keywords(texts: list[str], k: int = KEYWORDS_PER_NODE) -> list[str]:
+    # Count each word at most once per chunk (document frequency within the
+    # file), not once per raw occurrence -- otherwise a boilerplate phrase
+    # repeated many times in a single chunk (e.g. a citation-placeholder
+    # link title stamped on every reference) swamps the real topical words.
+    # dict.fromkeys (not a set) for the per-chunk dedup: a bare set's
+    # iteration order depends on Python's per-process hash randomization,
+    # which made most_common()'s tie-breaking between equal-count words
+    # silently non-deterministic across runs (same corpus, different
+    # top-3 keywords each `graph build` -- caught by re-running an
+    # identical diagnostic twice and getting 110 vs. 68 vs. 0 for the same
+    # word). dict.fromkeys preserves first-occurrence order in the text
+    # instead, which is deterministic.
     counts = Counter()
     for t in texts:
-        for w in _WORD_RE.findall(t.lower()):
-            if len(w) < 3 or w in _STOPWORDS:
-                continue
-            counts[w] += 1
+        words = list(dict.fromkeys(
+            w for w in _WORD_RE.findall(t.lower()) if len(w) >= 3 and w not in _STOPWORDS
+        ))
+        counts.update(words)
     return [w for w, _ in counts.most_common(k)]
+
+
+def _representative_label(indices, keywords: list[list[str]], global_df: Counter,
+                           n_total: int, k: int = 3) -> str:
+    """Pick a group/cluster label by IDF-weighted vote among words that
+    aren't near-universal across the corpus, not raw frequency. A word that
+    shows up in a large fraction of ALL nodes (this corpus's own flagship
+    project name, mentioned incidentally even in unrelated files, or a
+    boilerplate phrase repeated across many near-duplicate redirect stubs)
+    reliably outvotes genuinely distinctive-but-rarer words in any large,
+    mixed group -- log-scaled IDF discounting alone isn't a strong enough
+    penalty against that (observed empirically: an 11.8%-corpus-wide word
+    still won the vote in two DIFFERENT, unrelated branches of the same
+    split). A hard max-document-frequency cutoff (same idea as scikit-
+    learn's TfidfVectorizer max_df) excludes near-universal words from
+    candidacy entirely instead of just discounting them."""
+    local_counts = Counter(kw for i in indices for kw in keywords[i][:3])
+    if not local_counts:
+        return f"{len(indices)} items"
+    max_df = LABEL_MAX_DF_FRACTION * n_total
+    eligible = {w: c for w, c in local_counts.items() if global_df.get(w, 0) <= max_df}
+    if not eligible:
+        eligible = local_counts
+    scored = {
+        w: c * (math.log((n_total + 1) / (global_df.get(w, 0) + 1)) + 1)
+        for w, c in eligible.items()
+    }
+    top = sorted(scored, key=lambda w: scored[w], reverse=True)[:k]
+    return ", ".join(top)
+
+
+def _ollama_available() -> bool:
+    try:
+        urllib.request.urlopen(OLLAMA_TAGS_URL, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _llm_group_title(sample_titles: list[str], keyword_hint: str) -> str | None:
+    """Ask a small local model (via Ollama) for a real natural-language
+    cluster title instead of a raw keyword list -- generation is ~0.15-0.2s
+    once the model is warm, so this is affordable even across the ~150-200
+    group nodes a typical hierarchy build produces. Returns None (falls
+    back to the keyword label) on any failure -- this must never break a
+    graph build, including the unattended 3am scheduled one."""
+    prompt = (
+        "These are document/file titles from one cluster of a personal knowledge base:\n"
+        + "\n".join(f'- "{t}"' for t in sample_titles)
+        + f"\n\nTop shared keywords: {keyword_hint}\n\n"
+        "Give a short (2-5 word) descriptive topic label for this cluster. "
+        "Reply with ONLY the label, no punctuation, no explanation."
+    )
+    body = json.dumps({
+        "model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "keep_alive": "5m",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        OLLAMA_GENERATE_URL, data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        title = data.get("response", "").strip().strip('"').strip(".")
+        return title or None
+    except Exception:
+        return None
+
+
+def _sample_titles(indices, final_nodes: list[dict], k: int = LLM_TITLE_SAMPLE_SIZE) -> list[str]:
+    # Evenly spaced across the group rather than the first k in pre_order's
+    # DFS order, which would bias toward whichever side of the underlying
+    # binary tree happens to be visited first.
+    if len(indices) <= k:
+        chosen = indices
+    else:
+        step = max(1, len(indices) // k)
+        chosen = indices[::step][:k]
+    return [final_nodes[i]["title"] for i in chosen]
 
 
 def _fetch_scoped_chunks(col, project: str | None, include_code: bool):
@@ -255,6 +358,80 @@ def _bridge_text(node_a: dict, node_b: dict, similarity: float) -> str:
     return text
 
 
+def _build_hierarchy(unit: np.ndarray, final_nodes: list[dict], keywords: list[list[str]],
+                      global_df: Counter, n_total: int, use_llm_titles: bool) -> dict:
+    """Real agglomerative clustering (average-linkage, cosine distance) over
+    the same per-file mean embeddings the force-directed map uses -- a
+    genuine dendrogram, not a fixed Project>Cluster>Document scheme. Subtrees
+    at or below HIERARCHY_FLATTEN_BELOW leaves are flattened into one labeled
+    group with direct leaf children instead of a long chain of binary splits,
+    since a raw dendrogram down to singletons is unusable as a collapsible
+    outline."""
+    n = unit.shape[0]
+    if n == 0:
+        return {"kind": "group", "label": "(empty)", "size": 0, "children": []}
+    if n == 1:
+        return {"kind": "leaf", "node_id": final_nodes[0]["id"]}
+
+    # Ward's method (implicitly Euclidean) rather than average/cosine linkage --
+    # on these already-unit-normalized vectors Euclidean distance is a monotonic
+    # function of cosine similarity, and average-linkage was observed to chain
+    # badly on this corpus (max depth 76, root split 2 vs. 2292) versus Ward's
+    # far more balanced result (max depth ~21, root split ~1032 vs. 1262).
+    Z = linkage(unit, method="ward")
+    root = to_tree(Z, rd=False)
+
+    def label_for(indices) -> str:
+        return _representative_label(indices, keywords, global_df, n_total)
+
+    title_count = 0
+
+    def llm_title_for(indices, kw_label: str) -> str | None:
+        nonlocal title_count
+        if not use_llm_titles:
+            return None
+        title_count += 1
+        if title_count % 20 == 0:
+            print(f"    ...{title_count} group titles generated", flush=True)
+        return _llm_group_title(_sample_titles(indices, final_nodes), kw_label)
+
+    def split_into_fanout(node, target_fanout: int) -> list:
+        # scipy's linkage/to_tree is inherently a strictly-binary dendrogram
+        # (every merge combines exactly 2 clusters). Two children per level
+        # gives almost no differentiation at a glance -- repeatedly peeling
+        # the largest remaining piece into its own 2 linkage-children turns
+        # the same real clustering into a wider, more legible display tree
+        # (up to target_fanout children) without inventing new cluster math.
+        active = [node]
+        while len(active) < target_fanout:
+            splittable = [(i, a) for i, a in enumerate(active) if not a.is_leaf()]
+            if not splittable:
+                break
+            i, biggest = max(splittable, key=lambda ia: len(ia[1].pre_order()))
+            active[i : i + 1] = [biggest.get_left(), biggest.get_right()]
+        return active
+
+    def walk(node) -> dict:
+        if node.is_leaf():
+            return {"kind": "leaf", "node_id": final_nodes[node.id]["id"]}
+        leaf_idx = node.pre_order(lambda x: x.id)
+        kw_label = label_for(leaf_idx)
+        if len(leaf_idx) <= HIERARCHY_FLATTEN_BELOW:
+            return {
+                "kind": "group", "label": kw_label, "llm_title": llm_title_for(leaf_idx, kw_label),
+                "size": len(leaf_idx),
+                "children": [{"kind": "leaf", "node_id": final_nodes[i]["id"]} for i in leaf_idx],
+            }
+        children = split_into_fanout(node, HIERARCHY_FANOUT)
+        return {
+            "kind": "group", "label": kw_label, "llm_title": llm_title_for(leaf_idx, kw_label),
+            "size": len(leaf_idx),
+            "children": [walk(c) for c in children],
+        }
+
+    return walk(root)
+
+
 def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT,
                  include_code: bool = False, store_path: str = store.DEFAULT_STORE_PATH) -> dict:
     col = store.get_collection(store_path)
@@ -275,6 +452,15 @@ def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT
         vecs[i] = np.mean(np.array(g["embs"], dtype=np.float32), axis=0)
         keywords.append(_top_keywords(g["texts"]))
         metas.append(g["meta"])
+
+    global_df: Counter = Counter()
+    for kws in keywords:
+        global_df.update(set(kws[:3]))
+
+    use_llm_titles = _ollama_available()
+    print(f"  -> [memsearch graph] LLM group titles via Ollama: "
+          f"{'enabled (' + OLLAMA_MODEL + ')' if use_llm_titles else 'unavailable, using keyword labels only'}",
+          flush=True)
 
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
     norms[norms < 1e-9] = 1e-9
@@ -309,8 +495,7 @@ def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT
     clusters_out = []
     for ci, members in enumerate(base_clusters):
         pts = canvas[members]
-        label_counts = Counter(kw for i in members for kw in keywords[i][:3])
-        label = ", ".join(w for w, _ in label_counts.most_common(3)) or f"cluster {ci}"
+        label = _representative_label(members, keywords, global_df, n) or f"cluster {ci}"
         if len(pts) >= 3:
             hull = ConvexHull(pts)
             hv = pts[hull.vertices]
@@ -340,6 +525,11 @@ def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT
             "keywords": keywords[i], "n_chunks": len(groups[sf]["embs"]),
         })
     nodes_by_idx = final_nodes  # same order as node_ids_key
+
+    if use_llm_titles:
+        for ci, c in enumerate(clusters_out):
+            members = base_clusters[ci]
+            c["llm_title"] = _llm_group_title(_sample_titles(members, final_nodes), c["label"])
 
     G_geo = nx.Graph()
     for u, v in G.edges():
@@ -379,6 +569,9 @@ def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT
         [nd["id"] for nd in final_nodes], [nd["title"] for nd in final_nodes],
         unit, node_cluster, clusters_out, keywords, MAX_GAPS_PER_KIND)
 
+    print(f"  -> [memsearch graph] Building hierarchy ({n} nodes)...", flush=True)
+    hierarchy = _build_hierarchy(unit, final_nodes, keywords, global_df, n, use_llm_titles)
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scope": {"project": project, "top_k": top_k, "include_code": include_code},
@@ -388,6 +581,7 @@ def build_graph(project: str | None = None, top_k: int = TOP_K_NEIGHBORS_DEFAULT
         "roads": roads,
         "interpolation_gaps": interp_gaps,
         "extrapolation_gaps": extrap_gaps,
+        "hierarchy": hierarchy,
     }
 
 

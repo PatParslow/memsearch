@@ -291,6 +291,16 @@ def _find_interpolation_gaps(node_ids: list[str], titles: list[str], unit: np.nd
                 "node_a": node_ids[key[0]], "node_b": node_ids[key[1]],
                 "title_a": titles[key[0]], "title_b": titles[key[1]],
                 "pair_similarity": float(sim[key[0], key[1]]),
+                # The bridge/frontier node's own id, not just its title --
+                # several files across this corpus share an identical
+                # basename (a source copy, a build cache, and a published
+                # copy of the same page, for instance), so a bare title is
+                # genuinely ambiguous about which physical file was
+                # matched. Found via a real report of an apparent "0.91
+                # similarity to itself" that turned out to be two
+                # different files with the same name, not a bug in the
+                # similarity computation.
+                "nearest_existing_bridge_node": node_ids[best_third_idx],
                 "nearest_existing_bridge": titles[best_third_idx],
                 "nearest_existing_bridge_similarity": best_third_sim,
             })
@@ -336,6 +346,9 @@ def _find_extrapolation_gaps(node_ids: list[str], titles: list[str], unit: np.nd
             "cluster_id": cluster["id"], "cluster_label": cluster["label"],
             "frontier_node": node_ids[frontier_idx], "frontier_title": titles[frontier_idx],
             "frontier_keywords": keywords[frontier_idx][:4],
+            # See the matching comment in _find_interpolation_gaps -- same
+            # title-collision ambiguity, same fix (carry the real id).
+            "nearest_existing_node": node_ids[nearest_idx],
             "nearest_existing": titles[nearest_idx], "nearest_existing_similarity": nearest_sim,
         })
 

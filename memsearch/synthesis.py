@@ -231,7 +231,44 @@ def run_synthesis(limit: int = 8, offset: int = 0, graph_path: str = graph_mod.D
             "open_questions": design_result["open_questions"],
         })
 
-    return _write_report(accepted, rejected)
+    report_path = _write_report(accepted, rejected)
+    _update_synthesis_index(report_path, accepted, rejected)
+    return report_path
+
+
+SYNTHESIS_INDEX_PATH = Path(graph_mod.DEFAULT_GRAPH_PATH).parent / "synthesis_index.json"
+
+
+def _update_synthesis_index(report_path: Path, accepted: list[dict], rejected: list[dict]) -> None:
+    """Records which gaps (by node_a/node_b id, order-independent) already
+    have a synthesis report -- lets the graph UI show "a plan exists for
+    this gap" instead of just the bare numeric gap description, which was
+    otherwise the only thing visible there with no link to the actual
+    written-up idea."""
+    entries = []
+    if SYNTHESIS_INDEX_PATH.exists():
+        try:
+            entries = json.loads(SYNTHESIS_INDEX_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            entries = []
+
+    report_abs_path = str(report_path.resolve())
+    report_name = report_path.name
+    for i, item in enumerate(accepted, 1):
+        entries.append({
+            "node_a": item["gap"]["node_a"], "node_b": item["gap"]["node_b"],
+            "report_path": report_abs_path, "report_file": report_name,
+            "idea_number": i, "accepted": True,
+        })
+    for item in rejected:
+        entries.append({
+            "node_a": item["gap"]["node_a"], "node_b": item["gap"]["node_b"],
+            "report_path": report_abs_path, "report_file": report_name,
+            "idea_number": None, "accepted": False,
+        })
+
+    SYNTHESIS_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SYNTHESIS_INDEX_PATH.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
 def _write_report(accepted: list[dict], rejected: list[dict]) -> Path:

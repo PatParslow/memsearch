@@ -144,6 +144,11 @@ class Handler(BaseHTTPRequestHandler):
         data["manual_links"] = annotations.all_manual_links(conn)
         data["gap_status"] = annotations.all_gaps(conn)
         conn.close()
+        index_path = Path(self.graph_path).parent / "synthesis_index.json"
+        try:
+            data["synthesis_index"] = json.loads(index_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            data["synthesis_index"] = []
         self._send_json(data)
 
     # ---- POST ----

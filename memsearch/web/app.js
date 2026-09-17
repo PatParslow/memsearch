@@ -198,11 +198,27 @@
     }
   }
 
+  // Several files across a real corpus can share an identical basename
+  // (a source copy, a build cache, and a published copy of the same
+  // page, for instance) -- always showing the project alongside the
+  // title, rather than only when a collision is detected, avoids a gap
+  // description ever reading like a document being compared to itself
+  // when it's actually two distinct files that happen to share a name.
+  function labelFor(nodeId, fallbackTitle) {
+    const n = nodesById.get(nodeId);
+    if (!n) return fallbackTitle;
+    return `${n.title} [${n.project}]`;
+  }
+
   function describeInterp(g) {
-    return `${g.title_a} and ${g.title_b} are related (similarity ${g.pair_similarity.toFixed(2)}) but nothing sits between them -- nearest existing bridge is "${g.nearest_existing_bridge}" (${g.nearest_existing_bridge_similarity.toFixed(2)})`;
+    const a = labelFor(g.node_a, g.title_a), b = labelFor(g.node_b, g.title_b);
+    const bridge = labelFor(g.nearest_existing_bridge_node, g.nearest_existing_bridge);
+    return `${a} and ${b} are related (similarity ${g.pair_similarity.toFixed(2)}) but nothing sits between them -- nearest existing bridge is "${bridge}" (${g.nearest_existing_bridge_similarity.toFixed(2)})`;
   }
   function describeExtrap(g) {
-    return `Beyond "${g.frontier_title}" (edge of "${g.cluster_label}"), nothing covers that territory -- nearest existing content is "${g.nearest_existing}" (${g.nearest_existing_similarity.toFixed(2)})`;
+    const frontier = labelFor(g.frontier_node, g.frontier_title);
+    const nearest = labelFor(g.nearest_existing_node, g.nearest_existing);
+    return `Beyond "${frontier}" (edge of "${g.cluster_label}"), nothing covers that territory -- nearest existing content is "${nearest}" (${g.nearest_existing_similarity.toFixed(2)})`;
   }
   function gapStatusFor(map, kind, nodeA, nodeB, description) {
     // mirrors annotations.gap_id()'s hashing input shape server-side; client
@@ -298,6 +314,15 @@
 
   // ---- gaps tab ----
 
+  // Order-independent: a gap's two endpoints have no inherent order, and
+  // the index is written from whichever order synthesis.py happened to
+  // process them in.
+  function findSynthesisEntry(nodeA, nodeB) {
+    return (graphData.synthesis_index || []).find(
+      (e) => (e.node_a === nodeA && e.node_b === nodeB) || (e.node_a === nodeB && e.node_b === nodeA)
+    );
+  }
+
   function renderGapsTab() {
     const list = document.getElementById("gaps-list");
     list.innerHTML = "";
@@ -323,10 +348,29 @@
       kindLabel.textContent = row.kind;
       const desc = document.createElement("div");
       desc.textContent = row.desc;
+      item.append(kindLabel, desc);
+
+      const synthEntry = row.kind === "interpolation" ? findSynthesisEntry(row.nodeA, row.nodeB) : null;
+      if (synthEntry) {
+        const planNote = document.createElement("div");
+        planNote.className = "gap-plan-note";
+        if (synthEntry.accepted) {
+          const link = document.createElement("a");
+          link.href = `/api/source?path=${encodeURIComponent(synthEntry.report_path)}`;
+          link.target = "_blank";
+          link.rel = "noopener";
+          link.textContent = `View plan (Idea ${synthEntry.idea_number} in ${synthEntry.report_file})`;
+          planNote.appendChild(link);
+        } else {
+          planNote.textContent = `Considered in ${synthEntry.report_file} -- model found no substantive connection`;
+        }
+        item.appendChild(planNote);
+      }
+
       const btn = document.createElement("button");
       btn.textContent = "Dismiss";
       btn.addEventListener("click", () => dismissGap(row));
-      item.append(kindLabel, desc, btn);
+      item.appendChild(btn);
       list.appendChild(item);
     }
     if (!list.children.length) {

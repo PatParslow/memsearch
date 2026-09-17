@@ -127,6 +127,19 @@ def cmd_synergy(args):
     print(f"\nWritten to {out_path}")
 
 
+def cmd_consolidate(args):
+    children = []
+    for spec in args.children:
+        report_file, _, idea_str = spec.rpartition(":")
+        if not report_file or not idea_str.isdigit():
+            raise SystemExit(f"Invalid child spec '{spec}' -- expected report_file.md:idea_number")
+        children.append((report_file, int(idea_str)))
+    print(f"\nConsolidating {len(children)} idea(s) into a parent project...")
+    project = synergy.consolidate_ideas(children)
+    print(f"\nCreated project {project['id']}: {project['title']}")
+    print(project["description"])
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -214,6 +227,12 @@ def main():
     p_synergy.add_argument("--top-n", type=int, default=synergy.TOP_N_DEFAULT,
                             help=f"Max pairs to characterize with the local model (default: {synergy.TOP_N_DEFAULT})")
     p_synergy.set_defaults(func=cmd_synergy)
+
+    p_consolidate = sub.add_parser(
+        "consolidate", help="Roll up related ideas into a named parent project"
+    )
+    p_consolidate.add_argument("children", nargs="+", help="report_file.md:idea_number, one per related idea")
+    p_consolidate.set_defaults(func=cmd_consolidate)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

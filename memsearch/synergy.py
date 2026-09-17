@@ -28,6 +28,8 @@ from . import graph as graph_mod
 from . import refine, store, synthesis
 
 SYNERGY_PATH = Path(graph_mod.DEFAULT_GRAPH_PATH).parent / "synthesis_synergies.json"
+PROJECTS_PATH = Path(graph_mod.DEFAULT_GRAPH_PATH).parent / "synthesis_projects.json"
+INDEX_PATH = Path(graph_mod.DEFAULT_GRAPH_PATH).parent / "synthesis_index.json"
 # Calibrated against real data, not guessed: idea-concept similarity
 # runs much lower than raw-document similarity in the main corpus (a
 # handful of short, heterogeneous abstractive summaries across very
@@ -176,3 +178,105 @@ def run_synergy_scan(min_similarity: float = MIN_SIMILARITY_DEFAULT, top_n: int 
     SYNERGY_PATH.parent.mkdir(parents=True, exist_ok=True)
     SYNERGY_PATH.write_text(json.dumps(results, indent=2), encoding="utf-8")
     return SYNERGY_PATH
+
+
+CONSOLIDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "parent_title": {"type": "string", "description": "A short (3-8 word) name for the project uniting these ideas"},
+        "parent_description": {"type": "string", "description": "3-6 sentences describing the unified project and how the child ideas fit together as parts of it"},
+        "suggested_sequence": {
+            "type": "array",
+            "items": {"type": "object", "properties": {
+                "title": {"type": "string"}, "reason": {"type": "string"},
+            }, "required": ["title", "reason"]},
+            "description": "The child ideas in a sensible build order, each with a short reason for that position",
+        },
+    },
+    "required": ["parent_title", "parent_description", "suggested_sequence"],
+}
+
+
+def _load_index() -> list[dict]:
+    if not INDEX_PATH.exists():
+        return []
+    try:
+        return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+
+
+def _save_index(index: list[dict]) -> None:
+    INDEX_PATH.write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+
+def consolidate_ideas(children: list[tuple[str, int]]) -> dict:
+    """children: list of (report_file, idea_number) pairs, typically ones
+    the synergy scan already flagged as foundational/synergistic with
+    each other. Gathers each child's current concept, asks the local
+    model to synthesize a parent project that unifies them (title,
+    description, a sensible build order), records it in
+    synthesis_projects.json, and sets parent_id on each child's index
+    entry so the board can group them."""
+    index = _load_index()
+    by_key = {(e.get("report_file"), e.get("idea_number")): e for e in index}
+
+    child_details = []
+    report_cache: dict[str, str] = {}
+    for report_file, idea_number in children:
+        entry = by_key.get((report_file, idea_number))
+        if not entry:
+            raise RuntimeError(f"No index entry for {report_file} idea {idea_number}")
+        if entry.get("report_path") not in report_cache:
+            report_cache[entry["report_path"]] = Path(entry["report_path"]).read_text(encoding="utf-8")
+        state = refine._extract_idea_block(report_cache[entry["report_path"]], idea_number)
+        child_details.append({
+            "report_file": report_file, "idea_number": idea_number,
+            "title": entry.get("title", "?"), "concept": state["concept"] if state else "",
+        })
+
+    listing = "\n\n".join(
+        f"CHILD {i}: {c['title']}\n{c['concept']}" for i, c in enumerate(child_details, 1)
+    )
+    prompt = f"""These ideas were flagged as related (shared technique, foundational dependency, or synergy) by an automated scan of a personal knowledge base's idea-synthesis pipeline. Synthesize a single parent project that unifies them.
+
+{listing}
+
+Give the parent project a name and description that genuinely reflects what unites these specific ideas (not a generic umbrella term), and propose a sensible order to actually build them in, explaining why each one comes where it does (e.g. what it depends on from an earlier one)."""
+
+    def is_valid(r: dict) -> bool:
+        return (
+            len(str(r.get("parent_title", "")).split()) >= 2
+            and len(str(r.get("parent_description", "")).split()) >= 15
+            and isinstance(r.get("suggested_sequence"), list) and len(r["suggested_sequence"]) > 0
+        )
+
+    result = synthesis._ollama_generate_structured(prompt, CONSOLIDATE_SCHEMA, is_valid)
+    if not result:
+        raise RuntimeError("Local model failed to produce a valid parent-project synthesis")
+
+    projects = []
+    if PROJECTS_PATH.exists():
+        try:
+            projects = json.loads(PROJECTS_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            projects = []
+    project_id = f"proj_{len(projects) + 1}"
+    project = {
+        "id": project_id,
+        "title": result["parent_title"],
+        "description": result["parent_description"],
+        "suggested_sequence": result["suggested_sequence"],
+        "children": [{"report_file": c["report_file"], "idea_number": c["idea_number"], "title": c["title"]} for c in child_details],
+    }
+    projects.append(project)
+    PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROJECTS_PATH.write_text(json.dumps(projects, indent=2), encoding="utf-8")
+
+    for report_file, idea_number in children:
+        entry = by_key.get((report_file, idea_number))
+        if entry:
+            entry["parent_id"] = project_id
+    _save_index(index)
+
+    return project

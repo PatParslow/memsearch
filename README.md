@@ -52,7 +52,10 @@ cite.
 - Python 3.10+
 - [Ollama](https://ollama.com/) running locally, with a model available for
   the synthesis/synergy/decompose pipeline (see `SYNTHESIS_MODEL` in
-  `memsearch/synthesis.py`)
+  `memsearch/synthesis.py`). Development has used Qwen3 8B at a 3-bit
+  (`iq3xxs`) quantization specifically to fit inside 16GB of VRAM -- a
+  full-precision or larger model would likely improve output quality, at
+  the cost of needing more capable hardware.
 - The `claude` CLI, logged in, for `memsearch verify`'s headless web-search
   checks (draws from your Claude subscription usage allowance, not a
   separate API key)

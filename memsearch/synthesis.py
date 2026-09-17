@@ -259,12 +259,18 @@ def _update_synthesis_index(report_path: Path, accepted: list[dict], rejected: l
             "node_a": item["gap"]["node_a"], "node_b": item["gap"]["node_b"],
             "report_path": report_abs_path, "report_file": report_name,
             "idea_number": i, "accepted": True,
+            # "accepted" until a verify run's findings actually refute
+            # something -- see verify.py's _derive_status, which upgrades
+            # this to "needs_review" in place, never the other way.
+            "status": "accepted",
+            "title": f"{item['node_a']['title']} <-> {item['node_b']['title']}",
         })
     for item in rejected:
         entries.append({
             "node_a": item["gap"]["node_a"], "node_b": item["gap"]["node_b"],
             "report_path": report_abs_path, "report_file": report_name,
-            "idea_number": None, "accepted": False,
+            "idea_number": None, "accepted": False, "status": "rejected",
+            "title": f"{item['node_a']['title']} <-> {item['node_b']['title']}",
         })
 
     SYNTHESIS_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)

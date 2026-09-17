@@ -547,14 +547,70 @@
     currentView = view;
     document.getElementById("map-wrap").style.display = view === "map" ? "" : "none";
     document.getElementById("mindmap-wrap").style.display = view === "mindmap" ? "" : "none";
+    document.getElementById("board-wrap").style.display = view === "board" ? "" : "none";
     for (const btn of document.querySelectorAll(".view-btn")) {
       btn.classList.toggle("active", btn.dataset.view === view);
     }
     if (view === "mindmap") applyMindmapFilters();
+    if (view === "board") renderBoard();
   }
 
   document.getElementById("view-map-btn").addEventListener("click", () => setView("map"));
   document.getElementById("view-mindmap-btn").addEventListener("click", () => setView("mindmap"));
+  document.getElementById("view-board-btn").addEventListener("click", () => setView("board"));
+
+  // ---- kanban board of synthesis plans ----
+
+  function renderBoard() {
+    const columns = { accepted: [], needs_review: [], rejected: [] };
+    for (const entry of (graphData.synthesis_index || [])) {
+      const status = entry.status || (entry.accepted ? "accepted" : "rejected");
+      (columns[status] || columns.accepted).push(entry);
+    }
+    for (const status of Object.keys(columns)) {
+      const container = document.getElementById(`cards-${status}`);
+      const countEl = document.getElementById(`count-${status}`);
+      container.innerHTML = "";
+      countEl.textContent = columns[status].length;
+      for (const entry of columns[status]) {
+        container.appendChild(buildBoardCard(entry));
+      }
+      if (!columns[status].length) {
+        container.innerHTML = '<p class="muted" style="font-size:11.5px;">None</p>';
+      }
+    }
+  }
+
+  function buildBoardCard(entry) {
+    const card = document.createElement("div");
+    card.className = "board-card";
+    const title = document.createElement("div");
+    title.className = "board-card-title";
+    title.textContent = entry.title || `Idea ${entry.idea_number}`;
+    const meta = document.createElement("div");
+    meta.className = "board-card-meta";
+    meta.textContent = entry.idea_number
+      ? `Idea ${entry.idea_number} in ${entry.report_file}`
+      : `Considered in ${entry.report_file}`;
+    card.append(title, meta);
+    if (entry.verdicts) {
+      const chips = document.createElement("div");
+      chips.className = "board-verdicts";
+      for (const [verdict, count] of Object.entries(entry.verdicts)) {
+        const chip = document.createElement("span");
+        chip.className = `verdict-chip ${verdict}`;
+        chip.textContent = `${count} ${verdict}`;
+        chips.appendChild(chip);
+      }
+      card.appendChild(chips);
+    }
+    if (entry.accepted) {
+      card.addEventListener("click", () => openIdeaModal(entry.report_path, entry.idea_number, true));
+    } else {
+      card.style.cursor = "default";
+    }
+    return card;
+  }
 
   // ---- pan / zoom ----
 

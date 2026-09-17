@@ -17,6 +17,7 @@
   <span class="view-toggle">
     <button id="view-map-btn" class="view-btn active" data-view="map">Map</button>
     <button id="view-mindmap-btn" class="view-btn" data-view="mindmap">Mindmap</button>
+    <button id="view-board-btn" class="view-btn" data-view="board">Plans</button>
   </span>
   <span id="status-line"></span>
 </header>
@@ -28,6 +29,22 @@
   </div>
   <div id="mindmap-wrap" style="display:none">
     <ul id="mindmap-root"></ul>
+  </div>
+  <div id="board-wrap" style="display:none">
+    <div class="board-columns">
+      <div class="board-column" data-status="accepted">
+        <h2>Accepted <span class="board-count" id="count-accepted"></span></h2>
+        <div class="board-cards" id="cards-accepted"></div>
+      </div>
+      <div class="board-column" data-status="needs_review">
+        <h2>Needs Review <span class="board-count" id="count-needs_review"></span></h2>
+        <div class="board-cards" id="cards-needs_review"></div>
+      </div>
+      <div class="board-column" data-status="rejected">
+        <h2>Rejected <span class="board-count" id="count-rejected"></span></h2>
+        <div class="board-cards" id="cards-rejected"></div>
+      </div>
+    </div>
   </div>
 
   <aside id="sidebar">

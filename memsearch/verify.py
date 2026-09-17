@@ -34,6 +34,21 @@ VERIFY_CACHE_PATH = _MEMSEARCH_DIR / "verify_cache.json"
 SYNTHESIS_INDEX_PATH = _MEMSEARCH_DIR / "synthesis_index.json"
 CACHE_MAX_AGE_DAYS = 7
 
+VERDICT_ENUM = ["confirmed", "reframed", "precedented", "contradicted", "unresolved"]
+# Only "contradicted" counts against an idea (see _derive_status). The
+# other four verdicts replace an earlier flat supports/refutes/
+# inconclusive taxonomy that conflated genuinely different outcomes into
+# one negative bucket: a purely definitional question ("what does this
+# term actually mean") isn't a refutation just because the term turns
+# out to be locally-coined rather than established -- it's a correction
+# the idea can absorb (reframed). Finding that a similar technique
+# already exists elsewhere (Dreamer, for instance) isn't a refutation
+# either -- applying a known-good technique to a new domain is a real,
+# if narrower, kind of contribution (precedented). Caught in practice: a
+# real verify run scored both of those cases "refutes", which read as
+# "this idea is wrong" when the honest read was closer to "this idea is
+# more precisely described as X" or "this exists elsewhere but may still
+# be worth trying here."
 FINDINGS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -43,7 +58,20 @@ FINDINGS_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "question": {"type": "string"},
-                    "verdict": {"type": "string", "enum": ["supports", "refutes", "inconclusive"]},
+                    "verdict": {
+                        "type": "string", "enum": VERDICT_ENUM,
+                        "description": (
+                            "confirmed: claim checked out as stated. "
+                            "reframed: the framing was imprecise, but a corrected understanding still "
+                            "supports a version of the idea. "
+                            "precedented: a similar approach already exists elsewhere -- informative, "
+                            "not a strike against the idea; applying a known technique to a new domain "
+                            "is a legitimate, narrower contribution. "
+                            "contradicted: a load-bearing claim is actually wrong with no obvious "
+                            "salvage -- the only verdict that should count against the idea. "
+                            "unresolved: search didn't turn up enough to say either way."
+                        ),
+                    },
                     "summary": {"type": "string", "description": "2-4 sentences on what real sources say"},
                     "sources": {"type": "array", "items": {"type": "string"}},
                 },
@@ -126,6 +154,37 @@ def _save_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _call_claude_structured(prompt: str, schema: dict, timeout: int = 300) -> tuple[dict | None, float]:
+    """Shared low-level headless-Claude call, factored out of _verify_idea
+    so refine.py's refine-via-Claude step can reuse the exact same
+    subprocess/encoding/error handling rather than duplicating it."""
+    cmd = [
+        "claude", "-p", prompt,
+        "--allowedTools", "WebSearch",
+        "--permission-mode", "auto",
+        "--permission-prompts", "none",
+        "--output-format", "json",
+        "--json-schema", json.dumps(schema),
+    ]
+    try:
+        # encoding must be explicit: without it, subprocess falls back to
+        # the locale's default (cp1252 on this machine), which mangles
+        # claude -p's UTF-8 stdout into mojibake (real bytes seen in
+        # practice: em-dashes and accented characters like "Matérn"
+        # corrupted into "â€”" / "MatÃ©rn").
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout, check=False
+        )
+        data = json.loads(result.stdout)
+    except Exception as e:
+        print(f"    ! claude -p call failed: {e}", flush=True)
+        return None, 0.0
+    if data.get("is_error"):
+        print(f"    ! claude -p returned an error: {data.get('result')}", flush=True)
+        return None, data.get("total_cost_usd", 0.0)
+    return data.get("structured_output"), data.get("total_cost_usd", 0.0)
+
+
 def _verify_idea(concept: str, questions: list[str], cache: dict) -> tuple[dict | None, float, bool]:
     """One headless Claude call per idea, batching all its open questions
     together -- a single web-search-capable call draws real usage
@@ -149,47 +208,28 @@ IDEA: {concept}
 OPEN QUESTIONS:
 {numbered}
 
-For each question, search the web for relevant literature or prior art, then report a verdict (supports/refutes/inconclusive, relative to what the idea assumes), a concise summary of what you actually found, and the real source URLs you used. Be honest if search turns up nothing conclusive -- "inconclusive" is a legitimate answer."""
+For each question, search the web for relevant literature or prior art, then report a verdict, a concise summary of what you actually found, and the real source URLs you used.
 
-    cmd = [
-        "claude", "-p", prompt,
-        "--allowedTools", "WebSearch",
-        "--permission-mode", "auto",
-        "--permission-prompts", "none",
-        "--output-format", "json",
-        "--json-schema", json.dumps(FINDINGS_SCHEMA),
-    ]
-    try:
-        # encoding must be explicit: without it, subprocess falls back to
-        # the locale's default (cp1252 on this machine), which mangles
-        # claude -p's UTF-8 stdout into mojibake (real bytes seen in
-        # practice: em-dashes and accented characters like "Matérn"
-        # corrupted into "â€”" / "MatÃ©rn").
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, check=False
-        )
-        data = json.loads(result.stdout)
-    except Exception as e:
-        print(f"    ! claude -p call failed: {e}", flush=True)
-        return None, 0.0, False
-    if data.get("is_error"):
-        print(f"    ! claude -p returned an error: {data.get('result')}", flush=True)
-        return None, data.get("total_cost_usd", 0.0), False
-    output = data.get("structured_output")
+Use "contradicted" only when a load-bearing claim is actually wrong with no obvious salvage -- that's the only verdict that should count against the idea. If the question is really asking "what does this term/mechanism actually mean" and the answer just corrects or sharpens the idea's own framing (rather than showing the underlying mechanism doesn't work), that's "reframed", not "contradicted". If a similar approach already exists elsewhere, that's "precedented", not "contradicted" -- applying a known-good technique to a new domain is a legitimate, narrower contribution on its own, not a failure. Be honest if search turns up nothing conclusive -- "unresolved" is a legitimate answer."""
+
+    output, cost = _call_claude_structured(prompt, FINDINGS_SCHEMA)
     if output:
         cache[key] = {"result": output, "timestamp": time.time()}
-    return output, data.get("total_cost_usd", 0.0), False
+    return output, cost, False
 
 
 def _derive_status(findings: list[dict]) -> str:
     """An idea stays "accepted" unless its own verification results
-    genuinely undercut it -- any outright "refutes" verdict is enough to
-    move it to "needs_review" rather than leaving it looking equally
-    ready-to-pursue as an idea whose premise held up. This is a
-    deliberately low bar (one refute, not a majority): a single refuted
-    load-bearing claim is reason enough to want a second look before
-    treating the idea as sound."""
-    if any(f.get("verdict") == "refutes" for f in findings):
+    genuinely undercut it -- any outright "contradicted" verdict is
+    enough to move it to "needs_review" rather than leaving it looking
+    equally ready-to-pursue as an idea whose premise held up. This is a
+    deliberately low bar (one contradiction, not a majority): a single
+    contradicted load-bearing claim is reason enough to want a second
+    look before treating the idea as sound. "reframed", "precedented",
+    and "unresolved" do NOT count against the idea -- a corrected
+    framing or existing prior art elsewhere isn't a failure, it's
+    exactly the kind of context a refine pass can act on."""
+    if any(f.get("verdict") == "contradicted" for f in findings):
         return "needs_review"
     return "accepted"
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import convo_miner, graph, miner, store, synthesis, verify as verify_mod
+from . import convo_miner, graph, miner, refine as refine_mod, store, synthesis, verify as verify_mod
 from .gpu import enable_gpu
 
 
@@ -107,6 +107,19 @@ def cmd_verify(args):
         synthesis.mine_synthesis_dir()
 
 
+def cmd_refine(args):
+    print(f"\nRefine loop on idea {args.idea} in {args.report} "
+          f"(refiner={args.refiner}, max {args.max_iterations} iteration(s), budget cap ${args.max_cost:.2f})...")
+    out_path, total_cost, status = refine_mod.run_refine_loop(
+        args.report, args.idea, max_iterations=args.max_iterations,
+        refiner=args.refiner, max_cost=args.max_cost,
+    )
+    print(f"\nUpdated {out_path} -- final status: {status} -- total cost ${total_cost:.4f}")
+    if not args.no_mine:
+        print("Re-mining the report...")
+        synthesis.mine_synthesis_dir()
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -173,6 +186,18 @@ def main():
     p_verify.add_argument("--max-cost", type=float, default=5.0, help="Stop after this much spend, in USD (default: 5.00)")
     p_verify.add_argument("--no-mine", action="store_true", help="Don't re-mine the report afterward")
     p_verify.set_defaults(func=cmd_verify)
+
+    p_refine = sub.add_parser(
+        "refine", help="Iteratively refine + re-verify one idea until it stops contradicting itself"
+    )
+    p_refine.add_argument("report", help="Path to a synthesis_*.md report file")
+    p_refine.add_argument("idea", type=int, help="Idea number within the report")
+    p_refine.add_argument("--max-iterations", type=int, default=refine_mod.MAX_ITERATIONS_DEFAULT)
+    p_refine.add_argument("--refiner", choices=["claude", "local", "auto"], default="auto",
+                           help="Which model performs the refine step (default: auto -- Claude, falling back to local)")
+    p_refine.add_argument("--max-cost", type=float, default=5.0, help="Stop after this much spend, in USD (default: 5.00)")
+    p_refine.add_argument("--no-mine", action="store_true", help="Don't re-mine the report afterward")
+    p_refine.set_defaults(func=cmd_refine)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

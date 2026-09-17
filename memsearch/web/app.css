@@ -65,6 +65,13 @@ main { display: flex; height: calc(100% - 44px); }
   font-size: 10px; padding: 1px 6px; border-radius: 3px; text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+/* Current taxonomy (confirmed/reframed/precedented/contradicted/unresolved) */
+.verdict-chip.confirmed { background: #1f3a2a; color: #6ee7b7; }
+.verdict-chip.reframed { background: #1f2f3a; color: #7ac9e0; }
+.verdict-chip.precedented { background: #2a2438; color: #b39ddb; }
+.verdict-chip.contradicted { background: #3a2020; color: #e08a8a; }
+.verdict-chip.unresolved { background: #2a2a1f; color: #d6c26e; }
+/* Superseded taxonomy, kept so verdicts computed before this change still render with a colour */
 .verdict-chip.supports { background: #1f3a2a; color: #6ee7b7; }
 .verdict-chip.refutes { background: #3a2020; color: #e08a8a; }
 .verdict-chip.inconclusive { background: #2a2a1f; color: #d6c26e; }

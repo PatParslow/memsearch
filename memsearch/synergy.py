@@ -464,6 +464,61 @@ def _write_decomposition_report(source_title: str, decomposition: dict) -> Path:
     return out_path
 
 
+def _load_projects() -> list[dict]:
+    if not PROJECTS_PATH.exists():
+        return []
+    try:
+        return json.loads(PROJECTS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+
+
+def _save_projects(projects: list[dict]) -> None:
+    PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROJECTS_PATH.write_text(json.dumps(projects, indent=2), encoding="utf-8")
+
+
+def _materialize_decomposition(source_title: str, decomposition: dict, extra_project_fields: dict) -> dict:
+    """Shared by decompose_idea and reconcile_decompositions: writes the
+    sub-projects as a new synthesis report, appends index entries for
+    them, and records the whole thing as a synthesis_projects.json entry
+    with parent_id set on each child. `sub_project_details` keeps the raw
+    structured output (title/description/scope_boundary/interfaces) --
+    not just the rendered markdown -- so a later reconciliation can
+    compare attempts without lossily re-parsing prose back out of it."""
+    index = _load_index()
+    report_path = _write_decomposition_report(source_title, decomposition)
+
+    new_entries = []
+    for i, sp in enumerate(decomposition["sub_projects"], 1):
+        new_entries.append({
+            "node_a": None, "node_b": None,
+            "report_path": str(report_path.resolve()), "report_file": report_path.name,
+            "idea_number": i, "accepted": True, "status": "accepted",
+            "title": sp["title"],
+        })
+    index.extend(new_entries)
+
+    projects = _load_projects()
+    project_id = f"proj_{len(projects) + 1}"
+    project = {
+        "id": project_id,
+        "suggested_sequence": decomposition["build_order"],
+        "children": [{"report_file": report_path.name, "idea_number": i, "title": sp["title"]}
+                     for i, sp in enumerate(decomposition["sub_projects"], 1)],
+        "sub_project_details": decomposition["sub_projects"],
+        **extra_project_fields,
+    }
+    projects.append(project)
+    _save_projects(projects)
+
+    for new_entry in new_entries:
+        new_entry["parent_id"] = project_id
+    _save_index(index)
+
+    return project
+
+
 def decompose_idea(report_file: str, idea_number: int, max_iterations: int = 3) -> dict:
     """Breaks one existing idea down into well-scoped sub-projects. Writes
     the sub-projects as a new synthesis report (ordinary "## Idea N:" blocks,
@@ -482,42 +537,110 @@ def decompose_idea(report_file: str, idea_number: int, max_iterations: int = 3) 
     if not state or not state["concept"].strip():
         raise RuntimeError(f"No concept text found for {report_file} idea {idea_number} to decompose")
 
-    decomposition = _decompose_source(entry.get("title", state["title"]), state["concept"], max_iterations)
-    report_path = _write_decomposition_report(entry.get("title", state["title"]), decomposition)
-
-    new_entries = []
-    for i, sp in enumerate(decomposition["sub_projects"], 1):
-        new_entries.append({
-            "node_a": None, "node_b": None,
-            "report_path": str(report_path.resolve()), "report_file": report_path.name,
-            "idea_number": i, "accepted": True, "status": "accepted",
-            "title": sp["title"],
-        })
-    index.extend(new_entries)
-
-    projects = []
-    if PROJECTS_PATH.exists():
-        try:
-            projects = json.loads(PROJECTS_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            projects = []
-    project_id = f"proj_{len(projects) + 1}"
-    project = {
-        "id": project_id,
-        "title": f"Decomposition of: {entry.get('title', state['title'])}",
-        "description": f"Sub-projects produced by breaking down \"{entry.get('title', state['title'])}\" "
+    source_title = entry.get("title", state["title"])
+    decomposition = _decompose_source(source_title, state["concept"], max_iterations)
+    return _materialize_decomposition(source_title, decomposition, {
+        "title": f"Decomposition of: {source_title}",
+        "description": f"Sub-projects produced by breaking down \"{source_title}\" "
                         "into independently buildable pieces with explicit interfaces between them.",
-        "suggested_sequence": decomposition["build_order"],
-        "children": [{"report_file": report_path.name, "idea_number": i, "title": sp["title"]}
-                     for i, sp in enumerate(decomposition["sub_projects"], 1)],
         "decomposed_from": {"report_file": report_file, "idea_number": idea_number},
-    }
-    projects.append(project)
-    PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROJECTS_PATH.write_text(json.dumps(projects, indent=2), encoding="utf-8")
+    })
 
-    for new_entry in new_entries:
-        new_entry["parent_id"] = project_id
-    _save_index(index)
+
+RECONCILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "comparison_notes": {
+            "type": "string",
+            "description": "3-6 sentences on how the attempts actually differ: which pieces are the same idea "
+                            "under a different name, which are unique to one attempt and worth keeping, and "
+                            "where named interfaces conflict",
+        },
+        "sub_projects": DECOMPOSE_SCHEMA["properties"]["sub_projects"],
+        "build_order": DECOMPOSE_SCHEMA["properties"]["build_order"],
+    },
+    "required": ["comparison_notes", "sub_projects", "build_order"],
+}
+
+
+def _build_reconcile_prompt(source_title: str, attempts: list[list[dict]]) -> str:
+    listing = "\n\n".join(
+        f"ATTEMPT {i} ({len(attempt)} piece(s)):\n" + "\n".join(
+            f"- {sp['title']}: {sp['description']}\n"
+            f"  Out of scope: {sp['scope_boundary']}\n"
+            f"  Interfaces: {'; '.join(sp['interfaces']) or '(none given)'}"
+            for sp in attempt
+        )
+        for i, attempt in enumerate(attempts, 1)
+    )
+    return f"""Multiple independent attempts were made to decompose the same source project into well-scoped sub-projects. Compare them and produce a single reconciled decomposition.
+
+SOURCE: {source_title}
+
+{listing}
+
+First explain how the attempts actually differ -- which pieces are essentially the same idea under a different name, which are unique to one attempt and worth keeping, and where interfaces conflict. Then produce ONE final decomposition that takes the best-specified version of each real piece (merging duplicates, keeping genuinely distinct ones, dropping anything one attempt got wrong that another resolved better), with a build order."""
+
+
+def reconcile_decompositions(project_ids: list[str]) -> dict:
+    """When decompose_idea has been run more than once against the same
+    source idea -- deliberately, for a second opinion, or by accident --
+    the attempts often diverge in piece count and naming. Rather than
+    leaving the user to manually reconcile them, this feeds every
+    attempt's own structured output (not re-parsed markdown -- see
+    _materialize_decomposition's sub_project_details) back to the local
+    model, asks it to characterize how they actually differ, and
+    produces one merged decomposition. The prior attempts are kept (not
+    deleted) but marked superseded_by the new one."""
+    if len(project_ids) < 2:
+        raise RuntimeError("Need at least 2 decompositions to reconcile")
+
+    projects = _load_projects()
+    by_id = {p["id"]: p for p in projects}
+
+    decomposed_from = None
+    source_title = None
+    attempts = []
+    for pid in project_ids:
+        proj = by_id.get(pid)
+        if not proj:
+            raise RuntimeError(f"No project {pid}")
+        if not proj.get("decomposed_from") or not proj.get("sub_project_details"):
+            raise RuntimeError(f"Project {pid} is not a decomposition with recorded sub-project detail")
+        if decomposed_from is None:
+            decomposed_from = proj["decomposed_from"]
+        elif proj["decomposed_from"] != decomposed_from:
+            raise RuntimeError("All projects being reconciled must be decompositions of the same source idea")
+        source_title = proj["title"].removeprefix("Decomposition of: ")
+        attempts.append(proj["sub_project_details"])
+    assert source_title is not None  # loop runs >=2 times (checked above) and always assigns or raises
+
+    def is_valid(r: dict) -> bool:
+        return (
+            len(str(r.get("comparison_notes", "")).split()) >= 15
+            and isinstance(r.get("sub_projects"), list) and len(r["sub_projects"]) >= 2
+            and isinstance(r.get("build_order"), list) and len(r["build_order"]) > 0
+        )
+
+    result = synthesis._ollama_generate_structured(
+        _build_reconcile_prompt(source_title, attempts), RECONCILE_SCHEMA, is_valid,
+    )
+    if not result:
+        raise RuntimeError("Local model failed to produce a valid reconciliation")
+
+    project = _materialize_decomposition(source_title, result, {
+        "title": f"Decomposition of: {source_title}",
+        "description": f"Reconciled from {len(attempts)} prior decomposition attempts of \"{source_title}\". "
+                        f"{result['comparison_notes']}",
+        "decomposed_from": decomposed_from,
+        "reconciled_from": project_ids,
+    })
+
+    projects = _load_projects()
+    for pid in project_ids:
+        for p in projects:
+            if p["id"] == pid:
+                p["superseded_by"] = project["id"]
+    _save_projects(projects)
 
     return project

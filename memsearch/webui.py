@@ -211,6 +211,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._post_consolidate(body)
             elif path == "/api/synthesis-decompose":
                 self._post_decompose(body)
+            elif path == "/api/synthesis-reconcile-decompositions":
+                self._post_reconcile_decompositions(body)
             else:
                 self._send_json({"error": "not found"}, 404)
         except KeyError as e:
@@ -239,6 +241,16 @@ class Handler(BaseHTTPRequestHandler):
         from . import synergy
         try:
             project = synergy.decompose_idea(body["report_file"], body["idea_number"])
+            self._send_json(project, 201)
+        except KeyError as e:
+            self._send_json({"error": f"missing field: {e}"}, 400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+
+    def _post_reconcile_decompositions(self, body: dict) -> None:
+        from . import synergy
+        try:
+            project = synergy.reconcile_decompositions(body["project_ids"])
             self._send_json(project, 201)
         except KeyError as e:
             self._send_json({"error": f"missing field: {e}"}, 400)

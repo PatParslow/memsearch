@@ -629,36 +629,107 @@
     wireColumnDropTargets();
   }
 
+  // Two decompositions count as "the same idea" if they share a
+  // decomposed_from -- compared by value, not object identity, since
+  // each project loads as a fresh object from the API response.
+  const sameSource = (a, b) => a && b && a.report_file === b.report_file && a.idea_number === b.idea_number;
+
+  function existingDecompositionsFor(entry) {
+    return (graphData.synthesis_projects || []).filter(
+      (p) => p.decomposed_from && !p.superseded_by
+        && sameSource(p.decomposed_from, { report_file: entry.report_file, idea_number: entry.idea_number })
+    );
+  }
+
+  function buildProjectCard(proj) {
+    const card = document.createElement("div");
+    card.className = "project-card" + (proj.superseded_by ? " superseded" : "");
+    const title = document.createElement("div");
+    title.className = "project-title";
+    title.textContent = `\u{1F4CB} ${proj.title} (${proj.children.length} idea${proj.children.length === 1 ? "" : "s"})`;
+    const desc = document.createElement("div");
+    desc.className = "project-desc";
+    desc.textContent = proj.description;
+    card.append(title, desc);
+    if (proj.superseded_by) {
+      const note = document.createElement("div");
+      note.className = "project-superseded-note";
+      note.textContent = `Superseded by a reconciled decomposition (${proj.superseded_by}).`;
+      card.appendChild(note);
+    }
+    if (proj.suggested_sequence && proj.suggested_sequence.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.className = "project-seq";
+      summary.textContent = "Suggested build order";
+      details.appendChild(summary);
+      const ol = document.createElement("ol");
+      ol.className = "project-seq";
+      for (const step of proj.suggested_sequence) {
+        const li = document.createElement("li");
+        li.textContent = `${step.title} — ${step.reason}`;
+        ol.appendChild(li);
+      }
+      details.appendChild(ol);
+      card.appendChild(details);
+    }
+    return card;
+  }
+
   function renderProjectsRow() {
     const row = document.getElementById("projects-row");
     row.innerHTML = "";
-    for (const proj of (graphData.synthesis_projects || [])) {
-      const card = document.createElement("div");
-      card.className = "project-card";
-      const title = document.createElement("div");
-      title.className = "project-title";
-      title.textContent = `\u{1F4CB} ${proj.title} (${proj.children.length} idea${proj.children.length === 1 ? "" : "s"})`;
-      const desc = document.createElement("div");
-      desc.className = "project-desc";
-      desc.textContent = proj.description;
-      card.append(title, desc);
-      if (proj.suggested_sequence && proj.suggested_sequence.length) {
-        const details = document.createElement("details");
-        const summary = document.createElement("summary");
-        summary.className = "project-seq";
-        summary.textContent = "Suggested build order";
-        details.appendChild(summary);
-        const ol = document.createElement("ol");
-        ol.className = "project-seq";
-        for (const step of proj.suggested_sequence) {
-          const li = document.createElement("li");
-          li.textContent = `${step.title} — ${step.reason}`;
-          ol.appendChild(li);
-        }
-        details.appendChild(ol);
-        card.appendChild(details);
+    const projects = graphData.synthesis_projects || [];
+    const handled = new Set();
+    for (const proj of projects) {
+      if (handled.has(proj.id)) continue;
+      row.appendChild(buildProjectCard(proj));
+      handled.add(proj.id);
+
+      if (!proj.decomposed_from) continue;
+      // Group every other attempt at decomposing the SAME source idea
+      // (live ones only -- an already-superseded attempt doesn't need
+      // reconciling again) alongside this one, offering to reconcile
+      // once 2+ live attempts exist.
+      const siblings = projects.filter(
+        (p) => !handled.has(p.id) && !p.superseded_by && sameSource(p.decomposed_from, proj.decomposed_from)
+      );
+      for (const sib of siblings) {
+        row.appendChild(buildProjectCard(sib));
+        handled.add(sib.id);
       }
-      row.appendChild(card);
+      const liveGroup = [proj, ...siblings].filter((p) => !p.superseded_by);
+      if (liveGroup.length >= 2) {
+        const note = document.createElement("div");
+        note.className = "muted";
+        note.style.fontSize = "11.5px";
+        note.textContent = `${liveGroup.length} decompositions of the same idea exist above.`;
+        const btn = document.createElement("button");
+        btn.className = "project-reconcile-btn";
+        btn.textContent = `Compare & reconcile ${liveGroup.length} attempts`;
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const originalText = btn.textContent;
+          btn.textContent = "Reconciling... (local model, may take a minute)";
+          try {
+            const res = await fetch("/api/synthesis-reconcile-decompositions", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ project_ids: liveGroup.map((p) => p.id) }),
+            });
+            const data = await res.json();
+            if (!res.ok) { alert("Reconciliation failed: " + (data.error || "unknown error")); return; }
+            await loadGraph();
+            setView("board");
+          } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        });
+        const wrap = document.createElement("div");
+        wrap.className = "project-group-actions";
+        wrap.append(note, btn);
+        row.appendChild(wrap);
+      }
     }
   }
 
@@ -737,12 +808,23 @@
     card.appendChild(prio);
 
     if (entry.accepted && entry.idea_number) {
+      const existing = existingDecompositionsFor(entry);
       const decompBtn = document.createElement("button");
       decompBtn.className = "board-card-decompose-btn";
-      decompBtn.textContent = "Decompose into sub-projects";
+      decompBtn.textContent = existing.length
+        ? `Decompose again (${existing.length} already exist${existing.length === 1 ? "s" : ""})`
+        : "Decompose into sub-projects";
       decompBtn.title = "Break this idea down into well-scoped sub-projects (local model, may take a few minutes)";
       decompBtn.addEventListener("click", async (ev) => {
         ev.stopPropagation();
+        if (existing.length) {
+          const listing = existing.map((p) => `- ${p.title} (${p.children.length} piece${p.children.length === 1 ? "" : "s"})`).join("\n");
+          const proceed = confirm(
+            `This idea already has ${existing.length} decomposition${existing.length === 1 ? "" : "s"}:\n${listing}\n\n` +
+            "Run it again anyway? (You'll be able to compare and reconcile the attempts afterward from the Plans board.)"
+          );
+          if (!proceed) return;
+        }
         decompBtn.disabled = true;
         const originalText = decompBtn.textContent;
         decompBtn.textContent = "Decomposing... (local model, may take a few minutes)";

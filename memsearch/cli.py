@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import convo_miner, graph, miner, store, synthesis
+from . import convo_miner, graph, miner, store, synthesis, verify as verify_mod
 from .gpu import enable_gpu
 
 
@@ -97,6 +97,16 @@ def cmd_synthesize(args):
         synthesis.mine_synthesis_dir()
 
 
+def cmd_verify(args):
+    print(f"\nVerifying open questions in {args.report} via Claude (real web search, "
+          f"budget cap ${args.max_cost:.2f})...")
+    out_path, total_cost = verify_mod.verify_report(args.report, max_cost=args.max_cost)
+    print(f"\nUpdated {out_path} -- total cost ${total_cost:.4f}")
+    if not args.no_mine:
+        print("Re-mining the report...")
+        synthesis.mine_synthesis_dir()
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -155,6 +165,14 @@ def main():
     p_unmine = sub.add_parser("unmine", help="Delete all chunks whose source_file starts with a given path")
     p_unmine.add_argument("path")
     p_unmine.set_defaults(func=cmd_unmine)
+
+    p_verify = sub.add_parser(
+        "verify", help="Research a synthesis report's open questions via headless Claude (real web search)"
+    )
+    p_verify.add_argument("report", help="Path to a synthesis_*.md report file")
+    p_verify.add_argument("--max-cost", type=float, default=5.0, help="Stop after this much spend, in USD (default: 5.00)")
+    p_verify.add_argument("--no-mine", action="store_true", help="Don't re-mine the report afterward")
+    p_verify.set_defaults(func=cmd_verify)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

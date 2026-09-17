@@ -275,8 +275,18 @@ def run_refine_loop(
         )
         questions = refined["new_open_questions"] or questions
 
-    if iteration_log:
-        _write_iteration_log(path, idea_number, iteration_log)
+    if not iteration_log:
+        # No iteration ever produced real findings (e.g. the very first
+        # verify call failed -- content policy, session limit). Leaving
+        # the index entry untouched here matters: final_status defaults
+        # to "accepted" and would otherwise overwrite whatever real
+        # verdicts/status already existed with an empty, falsely-clean
+        # result -- a failed check must never look like a passed one.
+        print("  ! No successful verification this run -- leaving prior "
+              "status/verdicts in the index untouched", flush=True)
+        return path, total_cost, "unchanged"
+
+    _write_iteration_log(path, idea_number, iteration_log)
 
     verdict_tally: dict[str, int] = {}
     for f in final_findings:

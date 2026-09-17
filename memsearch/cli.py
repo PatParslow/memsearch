@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import convo_miner, graph, miner, refine as refine_mod, store, synthesis, verify as verify_mod
+from . import convo_miner, graph, miner, refine as refine_mod, store, synergy, synthesis, verify as verify_mod
 from .gpu import enable_gpu
 
 
@@ -120,6 +120,13 @@ def cmd_refine(args):
         synthesis.mine_synthesis_dir()
 
 
+def cmd_synergy(args):
+    print(f"\nScanning for synergies across all live ideas "
+          f"(min similarity {args.min_similarity:.2f}, top {args.top_n})...")
+    out_path = synergy.run_synergy_scan(min_similarity=args.min_similarity, top_n=args.top_n)
+    print(f"\nWritten to {out_path}")
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -198,6 +205,15 @@ def main():
     p_refine.add_argument("--max-cost", type=float, default=5.0, help="Stop after this much spend, in USD (default: 5.00)")
     p_refine.add_argument("--no-mine", action="store_true", help="Don't re-mine the report afterward")
     p_refine.set_defaults(func=cmd_refine)
+
+    p_synergy = sub.add_parser(
+        "synergy", help="Scan all live synthesis ideas for shared techniques, dependencies, or synergies"
+    )
+    p_synergy.add_argument("--min-similarity", type=float, default=synergy.MIN_SIMILARITY_DEFAULT,
+                            help=f"Minimum cosine similarity to consider a pair (default: {synergy.MIN_SIMILARITY_DEFAULT})")
+    p_synergy.add_argument("--top-n", type=int, default=synergy.TOP_N_DEFAULT,
+                            help=f"Max pairs to characterize with the local model (default: {synergy.TOP_N_DEFAULT})")
+    p_synergy.set_defaults(func=cmd_synergy)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

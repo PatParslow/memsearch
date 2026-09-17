@@ -349,7 +349,16 @@ def _write_report(accepted: list[dict], rejected: list[dict]) -> Path:
                   "connection worth proposing.", ""]
         for item in rejected:
             a, b = item["node_a"], item["node_b"]
-            lines += [f"- **{a['title']}** ({a['project']}) <-> **{b['title']}** ({b['project']})"]
+            # The model's own reasoning for rejecting this pair is kept,
+            # not just the bullet -- a later synergy scan (looking for
+            # whether a "dead" idea might be worth resurrecting alongside
+            # a live one) needs real content to compare against, and a
+            # bare "X <-> Y, no connection found" line has none.
+            lines += [
+                f"- **{a['title']}** ({a['project']}) <-> **{b['title']}** ({b['project']})",
+                f"  {item['reasoning'] or '(no reasoning captured)'}",
+                "",
+            ]
         lines.append("")
 
     SYNTHESIS_DIR.mkdir(parents=True, exist_ok=True)

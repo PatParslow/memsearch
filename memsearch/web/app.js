@@ -356,13 +356,15 @@
         planNote.className = "gap-plan-note";
         if (synthEntry.accepted) {
           const link = document.createElement("a");
-          link.href = `/api/source?path=${encodeURIComponent(synthEntry.report_path)}`;
-          link.target = "_blank";
-          link.rel = "noopener";
+          link.href = "#";
           link.textContent = `View plan (Idea ${synthEntry.idea_number} in ${synthEntry.report_file})`;
+          link.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            openIdeaModal(synthEntry.report_path, synthEntry.idea_number, true);
+          });
           planNote.appendChild(link);
         } else {
-          planNote.textContent = `Considered in ${synthEntry.report_file} -- model found no substantive connection`;
+          planNote.textContent = `✗ Considered in ${synthEntry.report_file} -- model found no substantive connection, not pursued`;
         }
         item.appendChild(planNote);
       }
@@ -396,6 +398,71 @@
     }
     await loadGraph();
   }
+
+  // ---- synthesis idea modal ----
+
+  // A minimal markdown-to-HTML renderer, not a general-purpose one --
+  // this only ever needs to handle the exact subset synthesis.py itself
+  // generates (headings, bold, bullet lists, blockquotes, inline code,
+  // horizontal rules, paragraphs), so a small hand-rolled pass is enough
+  // and avoids pulling in a markdown library dependency.
+  function renderMarkdown(md) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+    const lines = md.split("\n");
+    const out = [];
+    let inList = false;
+    let para = [];
+    const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+    const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+
+    for (const line of lines) {
+      if (/^###\s+/.test(line)) { flushPara(); closeList(); out.push(`<h3>${inline(line.replace(/^###\s+/, ""))}</h3>`); continue; }
+      if (/^##\s+/.test(line)) { flushPara(); closeList(); out.push(`<h2>${inline(line.replace(/^##\s+/, ""))}</h2>`); continue; }
+      if (/^#\s+/.test(line)) { flushPara(); closeList(); out.push(`<h1>${inline(line.replace(/^#\s+/, ""))}</h1>`); continue; }
+      if (/^---\s*$/.test(line)) { flushPara(); closeList(); out.push("<hr>"); continue; }
+      if (/^>\s?/.test(line)) { flushPara(); closeList(); out.push(`<blockquote>${inline(line.replace(/^>\s?/, ""))}</blockquote>`); continue; }
+      if (/^-\s+/.test(line)) {
+        flushPara();
+        if (!inList) { out.push("<ul>"); inList = true; }
+        out.push(`<li>${inline(line.replace(/^-\s+/, ""))}</li>`);
+        continue;
+      }
+      if (line.trim() === "") { flushPara(); closeList(); continue; }
+      closeList();
+      para.push(line.trim());
+    }
+    flushPara();
+    closeList();
+    return out.join("\n");
+  }
+
+  async function openIdeaModal(reportPath, ideaNumber, accepted) {
+    const overlay = document.getElementById("idea-modal-overlay");
+    const content = document.getElementById("idea-modal-content");
+    content.innerHTML = '<p class="muted">Loading...</p>';
+    overlay.style.display = "flex";
+    const res = await fetch(`/api/synthesis-idea?path=${encodeURIComponent(reportPath)}&idea=${ideaNumber}`);
+    const data = await res.json();
+    if (!res.ok) {
+      content.innerHTML = `<p class="muted">${data.error || "Failed to load"}</p>`;
+      return;
+    }
+    const badgeClass = accepted ? "accepted" : "rejected";
+    const badgeText = accepted ? "✓ Accepted for follow-up" : "✗ Not pursued";
+    content.innerHTML =
+      `<div class="idea-badge ${badgeClass}">${badgeText}</div>` +
+      `<h1>${data.title}</h1>` +
+      `<div class="idea-meta">Idea ${data.idea_number} in ${data.report_file}</div>` +
+      renderMarkdown(data.markdown);
+  }
+
+  document.getElementById("idea-modal-close").addEventListener("click", () => {
+    document.getElementById("idea-modal-overlay").style.display = "none";
+  });
+  document.getElementById("idea-modal-overlay").addEventListener("click", (ev) => {
+    if (ev.target.id === "idea-modal-overlay") ev.currentTarget.style.display = "none";
+  });
 
   // ---- mindmap (collapsible outline over real agglomerative clustering) ----
 

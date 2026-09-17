@@ -102,8 +102,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(data)
         elif path == "/api/source":
             self._api_get_source(qs.get("path", [None])[0])
+        elif path == "/api/synthesis-idea":
+            self._api_get_synthesis_idea(qs.get("path", [None])[0], qs.get("idea", [None])[0])
         else:
             self._send_json({"error": "not found"}, 404)
+
+    def _api_get_synthesis_idea(self, raw_path: str | None, idea_number: str | None) -> None:
+        # Scoped view for a single idea within a synthesis report -- the
+        # generic /api/source route (used everywhere else) always serves
+        # a whole file, which is right for viewing a source file but
+        # wrong here: a report can hold a dozen ideas, and a "View plan"
+        # link from one specific gap should jump straight to that one,
+        # not dump the whole document as unrendered text.
+        if not raw_path or not idea_number:
+            self._send_json({"error": "missing path or idea"}, 400)
+            return
+        p = Path(raw_path)
+        if not p.is_file():
+            self._send_json({"error": "report not found on disk"}, 404)
+            return
+        text = p.read_text(encoding="utf-8")
+        blocks = re.split(r"(?m)^## Idea (\d+): ", text)
+        idea_map = {}
+        for i in range(1, len(blocks), 2):
+            idea_map[blocks[i]] = blocks[i + 1]
+        body = idea_map.get(idea_number)
+        if body is None:
+            self._send_json({"error": "idea not found in this report"}, 404)
+            return
+        body = re.sub(r"\n---\s*\Z", "", body.strip())
+        title, _, rest = body.partition("\n")
+        self._send_json({
+            "report_file": p.name, "idea_number": idea_number,
+            "title": title.strip(), "markdown": rest.strip(),
+        })
 
     def _api_get_source(self, raw_path: str | None) -> None:
         if not raw_path:

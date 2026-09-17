@@ -87,6 +87,12 @@ main { display: flex; height: calc(100% - 44px); }
   background: #0e1116; color: #a9b3bd; border: 1px solid #2a323c; border-radius: 3px;
   width: 18px; height: 18px; line-height: 1; cursor: pointer; padding: 0;
 }
+.board-card-decompose-btn {
+  display: block; margin-top: 6px; width: 100%; background: #2a2438; color: #b39ddb;
+  border: 1px solid #443a5e; border-radius: 4px; padding: 4px 6px; font-size: 11px; cursor: pointer;
+}
+.board-card-decompose-btn:hover { background: #332a45; }
+.board-card-decompose-btn:disabled { opacity: 0.7; cursor: default; }
 .board-column[data-status="accepted"] .board-card { border-left-color: #6ee7b7; }
 .board-column[data-status="needs_review"] .board-card { border-left-color: #e0a458; }
 .board-column[data-status="rejected"] .board-card { border-left-color: #c96a6a; }

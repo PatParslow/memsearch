@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import convo_miner, graph, miner, refine as refine_mod, store, synergy, synthesis, verify as verify_mod
 from .gpu import enable_gpu
@@ -140,6 +141,15 @@ def cmd_consolidate(args):
     print(project["description"])
 
 
+def cmd_decompose(args):
+    report_file = Path(args.report).name  # index keys on basename, same as consolidate's children specs
+    print(f"\nDecomposing idea {args.idea} in {report_file} (max {args.max_iterations} iteration(s))...")
+    project = synergy.decompose_idea(report_file, args.idea, max_iterations=args.max_iterations)
+    print(f"\nCreated project {project['id']}: {project['title']}")
+    for child in project["children"]:
+        print(f"  - Idea {child['idea_number']}: {child['title']}")
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -233,6 +243,15 @@ def main():
     )
     p_consolidate.add_argument("children", nargs="+", help="report_file.md:idea_number, one per related idea")
     p_consolidate.set_defaults(func=cmd_consolidate)
+
+    p_decompose = sub.add_parser(
+        "decompose", help="Break one idea down into well-scoped sub-projects with explicit interfaces"
+    )
+    p_decompose.add_argument("report", help="Path to a synthesis_*.md report file")
+    p_decompose.add_argument("idea", type=int, help="Idea number within the report to decompose")
+    p_decompose.add_argument("--max-iterations", type=int, default=3,
+                              help="How many propose/critique rounds before accepting the last attempt (default: 3)")
+    p_decompose.set_defaults(func=cmd_decompose)
 
     p_graph = sub.add_parser("graph", help="Build/serve the knowledge-graph map")
     graph_sub = p_graph.add_subparsers(dest="graph_command", required=True)

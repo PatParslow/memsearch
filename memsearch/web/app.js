@@ -736,6 +736,33 @@
     prio.append(prioLabel, dec, inc);
     card.appendChild(prio);
 
+    if (entry.accepted && entry.idea_number) {
+      const decompBtn = document.createElement("button");
+      decompBtn.className = "board-card-decompose-btn";
+      decompBtn.textContent = "Decompose into sub-projects";
+      decompBtn.title = "Break this idea down into well-scoped sub-projects (local model, may take a few minutes)";
+      decompBtn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        decompBtn.disabled = true;
+        const originalText = decompBtn.textContent;
+        decompBtn.textContent = "Decomposing... (local model, may take a few minutes)";
+        try {
+          const res = await fetch("/api/synthesis-decompose", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ report_file: entry.report_file, idea_number: entry.idea_number }),
+          });
+          const data = await res.json();
+          if (!res.ok) { alert("Decomposition failed: " + (data.error || "unknown error")); return; }
+          await loadGraph();
+          setView("board");
+        } finally {
+          decompBtn.disabled = false;
+          decompBtn.textContent = originalText;
+        }
+      });
+      card.appendChild(decompBtn);
+    }
+
     if (entry.accepted) {
       card.draggable = true;
       card.addEventListener("dragstart", (ev) => {

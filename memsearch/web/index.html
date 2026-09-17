@@ -31,6 +31,12 @@
     <ul id="mindmap-root"></ul>
   </div>
   <div id="board-wrap" style="display:none">
+    <div id="board-toolbar">
+      <button id="select-mode-btn" title="Select cards to roll up into a parent project">Select ideas...</button>
+      <button id="consolidate-btn" style="display:none">Consolidate selected into project</button>
+      <span id="select-count" class="muted"></span>
+    </div>
+    <div id="projects-row"></div>
     <div class="board-columns">
       <div class="board-column" data-status="accepted">
         <h2>Accepted <span class="board-count" id="count-accepted"></span></h2>

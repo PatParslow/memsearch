@@ -181,6 +181,11 @@ class Handler(BaseHTTPRequestHandler):
             data["synthesis_index"] = json.loads(index_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             data["synthesis_index"] = []
+        projects_path = Path(self.graph_path).parent / "synthesis_projects.json"
+        try:
+            data["synthesis_projects"] = json.loads(projects_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            data["synthesis_projects"] = []
         self._send_json(data)
 
     # ---- POST ----
@@ -202,12 +207,28 @@ class Handler(BaseHTTPRequestHandler):
                     body["description"], status=body.get("status", "open"),
                 )
                 self._send_json({"id": gid}, 201)
+            elif path == "/api/synthesis-consolidate":
+                self._post_consolidate(body)
             else:
                 self._send_json({"error": "not found"}, 404)
         except KeyError as e:
             self._send_json({"error": f"missing field: {e}"}, 400)
         finally:
             conn.close()
+
+    def _post_consolidate(self, body: dict) -> None:
+        # Runs the local model synchronously (~30-90s) -- this thread
+        # blocks for that duration under ThreadingHTTPServer, which only
+        # holds up the ONE client making this specific request, not the
+        # rest of the UI; acceptable for an occasional, deliberate action
+        # rather than something worth building async job tracking for.
+        from . import synergy
+        children = [(c["report_file"], c["idea_number"]) for c in body.get("children", [])]
+        try:
+            project = synergy.consolidate_ideas(children)
+            self._send_json(project, 201)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
 
     # ---- PATCH ----
 
@@ -221,7 +242,35 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self._send_json({"ok": True})
             return
+        if path in ("/api/synthesis-status", "/api/synthesis-priority"):
+            self._patch_synthesis_index_entry(path, body)
+            return
         self._send_json({"error": "not found"}, 404)
+
+    def _patch_synthesis_index_entry(self, path: str, body: dict) -> None:
+        # Board-driven edits (manual column moves, priority) live in the
+        # same synthesis_index.json the CLI writes to -- read-modify-write
+        # under no lock, matching every other index writer in this
+        # codebase (cli.py's refine/verify/synergy commands run one at a
+        # time from a terminal, not concurrently against the running
+        # server, so this has been an acceptable simplification
+        # throughout rather than a new risk introduced here).
+        index_path = Path(self.graph_path).parent / "synthesis_index.json"
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            index = []
+        report_file, idea_number = body.get("report_file"), body.get("idea_number")
+        for entry in index:
+            if entry.get("report_file") == report_file and entry.get("idea_number") == idea_number:
+                if path == "/api/synthesis-status":
+                    entry["manual_status"] = body.get("manual_status")
+                else:
+                    entry["priority"] = body.get("priority")
+                index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+                self._send_json({"ok": True})
+                return
+        self._send_json({"error": "idea not found in index"}, 404)
 
     # ---- DELETE ----
 

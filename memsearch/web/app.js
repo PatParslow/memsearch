@@ -461,7 +461,43 @@
       `<div class="idea-badge ${badgeClass}">${badgeText}</div>` +
       `<h1>${data.title}</h1>` +
       `<div class="idea-meta">Idea ${data.idea_number} in ${data.report_file}</div>` +
-      renderMarkdown(data.markdown);
+      renderMarkdown(data.markdown) +
+      `<h3>Notes</h3><div id="idea-notes"></div>` +
+      `<textarea id="idea-note-text" placeholder="Add a note about this idea..."></textarea>` +
+      `<button id="idea-note-save">Save note</button>`;
+
+    const ideaNodeId = `idea:${data.report_file}:${data.idea_number}`;
+    await renderIdeaNotes(ideaNodeId);
+    document.getElementById("idea-note-save").addEventListener("click", async () => {
+      const textArea = document.getElementById("idea-note-text");
+      const text = textArea.value.trim();
+      if (!text) return;
+      await fetch("/api/notes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: ideaNodeId, text }),
+      });
+      textArea.value = "";
+      await renderIdeaNotes(ideaNodeId);
+    });
+  }
+
+  async function renderIdeaNotes(ideaNodeId) {
+    const notesDiv = document.getElementById("idea-notes");
+    if (!notesDiv) return;
+    const res = await fetch(`/api/notes?node_id=${encodeURIComponent(ideaNodeId)}`);
+    const notes = await res.json();
+    notesDiv.innerHTML = "";
+    for (const note of notes) {
+      const item = document.createElement("div");
+      item.className = "note-item";
+      item.textContent = note.text;
+      const date = document.createElement("div");
+      date.className = "note-date";
+      date.textContent = new Date(note.created_at * 1000).toLocaleString();
+      item.appendChild(date);
+      notesDiv.appendChild(item);
+    }
+    if (!notes.length) notesDiv.innerHTML = '<p class="muted">No notes yet.</p>';
   }
 
   document.getElementById("idea-modal-close").addEventListener("click", () => {
@@ -561,13 +597,24 @@
 
   // ---- kanban board of synthesis plans ----
 
+  let selectMode = false;
+  const selectedCards = new Set(); // keys of "report_file::idea_number"
+  const cardKey = (e) => `${e.report_file}::${e.idea_number}`;
+
   function renderBoard() {
+    renderProjectsRow();
     const columns = { accepted: [], needs_review: [], rejected: [] };
     for (const entry of (graphData.synthesis_index || [])) {
-      const status = entry.status || (entry.accepted ? "accepted" : "rejected");
+      const status = entry.manual_status || entry.status || (entry.accepted ? "accepted" : "rejected");
       (columns[status] || columns.accepted).push(entry);
     }
     for (const status of Object.keys(columns)) {
+      // Lower priority number = higher priority = sorts first. Unset
+      // (null/undefined) sorts after every explicitly prioritized card,
+      // not before -- an unset priority shouldn't silently outrank one
+      // the user deliberately set to "high".
+      columns[status].sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
+
       const container = document.getElementById(`cards-${status}`);
       const countEl = document.getElementById(`count-${status}`);
       container.innerHTML = "";
@@ -579,11 +626,63 @@
         container.innerHTML = '<p class="muted" style="font-size:11.5px;">None</p>';
       }
     }
+    wireColumnDropTargets();
+  }
+
+  function renderProjectsRow() {
+    const row = document.getElementById("projects-row");
+    row.innerHTML = "";
+    for (const proj of (graphData.synthesis_projects || [])) {
+      const card = document.createElement("div");
+      card.className = "project-card";
+      const title = document.createElement("div");
+      title.className = "project-title";
+      title.textContent = `\u{1F4CB} ${proj.title} (${proj.children.length} idea${proj.children.length === 1 ? "" : "s"})`;
+      const desc = document.createElement("div");
+      desc.className = "project-desc";
+      desc.textContent = proj.description;
+      card.append(title, desc);
+      if (proj.suggested_sequence && proj.suggested_sequence.length) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.className = "project-seq";
+        summary.textContent = "Suggested build order";
+        details.appendChild(summary);
+        const ol = document.createElement("ol");
+        ol.className = "project-seq";
+        for (const step of proj.suggested_sequence) {
+          const li = document.createElement("li");
+          li.textContent = `${step.title} — ${step.reason}`;
+          ol.appendChild(li);
+        }
+        details.appendChild(ol);
+        card.appendChild(details);
+      }
+      row.appendChild(card);
+    }
   }
 
   function buildBoardCard(entry) {
     const card = document.createElement("div");
     card.className = "board-card";
+    const key = cardKey(entry);
+    if (selectedCards.has(key)) card.classList.add("selected");
+
+    const top = document.createElement("div");
+    top.className = "board-card-top";
+    if (selectMode) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "board-card-select";
+      cb.checked = selectedCards.has(key);
+      cb.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (cb.checked) selectedCards.add(key); else selectedCards.delete(key);
+        updateSelectionUI();
+      });
+      top.appendChild(cb);
+    }
+    const titleWrap = document.createElement("div");
     const title = document.createElement("div");
     title.className = "board-card-title";
     title.textContent = entry.title || `Idea ${entry.idea_number}`;
@@ -592,7 +691,18 @@
     meta.textContent = entry.idea_number
       ? `Idea ${entry.idea_number} in ${entry.report_file}`
       : `Considered in ${entry.report_file}`;
-    card.append(title, meta);
+    titleWrap.append(title, meta);
+    top.appendChild(titleWrap);
+    card.appendChild(top);
+
+    if (entry.parent_id) {
+      const proj = (graphData.synthesis_projects || []).find((p) => p.id === entry.parent_id);
+      const tag = document.createElement("div");
+      tag.className = "board-card-parent-tag";
+      tag.textContent = `Part of: ${proj ? proj.title : entry.parent_id}`;
+      card.appendChild(tag);
+    }
+
     if (entry.verdicts) {
       const chips = document.createElement("div");
       chips.className = "board-verdicts";
@@ -604,13 +714,115 @@
       }
       card.appendChild(chips);
     }
+    if (entry.pending_reverify) {
+      const note = document.createElement("div");
+      note.className = "gap-plan-note";
+      note.textContent = "⏳ Pending re-verification";
+      card.appendChild(note);
+    }
+
+    const prio = document.createElement("div");
+    prio.className = "board-card-priority";
+    const prioLabel = document.createElement("span");
+    prioLabel.textContent = `Priority: ${entry.priority ?? "—"}`;
+    const dec = document.createElement("button");
+    dec.textContent = "−";
+    dec.title = "Raise priority (lower number = higher)";
+    dec.addEventListener("click", (ev) => { ev.stopPropagation(); adjustPriority(entry, -1); });
+    const inc = document.createElement("button");
+    inc.textContent = "+";
+    inc.title = "Lower priority";
+    inc.addEventListener("click", (ev) => { ev.stopPropagation(); adjustPriority(entry, 1); });
+    prio.append(prioLabel, dec, inc);
+    card.appendChild(prio);
+
     if (entry.accepted) {
-      card.addEventListener("click", () => openIdeaModal(entry.report_path, entry.idea_number, true));
+      card.draggable = true;
+      card.addEventListener("dragstart", (ev) => {
+        card.classList.add("dragging");
+        ev.dataTransfer.setData("text/plain", key);
+      });
+      card.addEventListener("dragend", () => card.classList.remove("dragging"));
+      card.addEventListener("click", () => {
+        if (selectMode) return; // click toggles nothing extra; checkbox handles selection
+        openIdeaModal(entry.report_path, entry.idea_number, true);
+      });
     } else {
       card.style.cursor = "default";
     }
     return card;
   }
+
+  function wireColumnDropTargets() {
+    for (const col of document.querySelectorAll(".board-column")) {
+      col.addEventListener("dragover", (ev) => { ev.preventDefault(); col.classList.add("drag-over"); });
+      col.addEventListener("dragleave", () => col.classList.remove("drag-over"));
+      col.addEventListener("drop", async (ev) => {
+        ev.preventDefault();
+        col.classList.remove("drag-over");
+        const key = ev.dataTransfer.getData("text/plain");
+        const [reportFile, ideaNumberStr] = key.split("::");
+        const newStatus = col.dataset.status;
+        const entry = (graphData.synthesis_index || []).find((e) => cardKey(e) === key);
+        if (entry) entry.manual_status = newStatus; // optimistic, matches the fetch below
+        renderBoard();
+        await fetch("/api/synthesis-status", {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ report_file: reportFile, idea_number: parseInt(ideaNumberStr, 10), manual_status: newStatus }),
+        });
+      });
+    }
+  }
+
+  async function adjustPriority(entry, delta) {
+    entry.priority = (entry.priority ?? 3) + delta;
+    renderBoard();
+    await fetch("/api/synthesis-priority", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ report_file: entry.report_file, idea_number: entry.idea_number, priority: entry.priority }),
+    });
+  }
+
+  function updateSelectionUI() {
+    document.getElementById("select-count").textContent =
+      selectedCards.size ? `${selectedCards.size} selected` : "";
+    document.getElementById("consolidate-btn").style.display = selectedCards.size >= 2 ? "" : "none";
+  }
+
+  document.getElementById("select-mode-btn").addEventListener("click", (ev) => {
+    selectMode = !selectMode;
+    if (!selectMode) selectedCards.clear();
+    ev.target.classList.toggle("active", selectMode);
+    updateSelectionUI();
+    renderBoard();
+  });
+
+  document.getElementById("consolidate-btn").addEventListener("click", async () => {
+    const children = [...selectedCards].map((key) => {
+      const [report_file, idea_number] = key.split("::");
+      return { report_file, idea_number: parseInt(idea_number, 10) };
+    });
+    const btn = document.getElementById("consolidate-btn");
+    btn.disabled = true;
+    btn.textContent = "Consolidating... (local model, may take a minute)";
+    try {
+      const res = await fetch("/api/synthesis-consolidate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ children }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert("Consolidation failed: " + (data.error || "unknown error")); return; }
+      selectedCards.clear();
+      selectMode = false;
+      document.getElementById("select-mode-btn").classList.remove("active");
+      updateSelectionUI();
+      await loadGraph();
+      setView("board");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Consolidate selected into project";
+    }
+  });
 
   // ---- pan / zoom ----
 

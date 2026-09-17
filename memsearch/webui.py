@@ -11,11 +11,51 @@ import re
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+
+from bs4 import BeautifulSoup
 
 from . import annotations, convo_miner, graph
 
 STATIC_DIR = Path(__file__).parent / "web"
+
+# A bare content fragment (no <head>) rendered with no styling at all is a
+# wall of unstyled black-on-white text -- most of this project's own HTML
+# nodes are exactly that (pre-build content/pages/*.html, styled only once
+# build.py wraps them in the site template). This gives them a minimally
+# readable default without pretending to be the real site theme.
+_FRAGMENT_STYLE = (
+    "<style>body{font-family:system-ui,sans-serif;max-width:800px;margin:24px auto;"
+    "padding:0 16px;line-height:1.5;color:#1a1a1a} img{max-width:100%}</style>"
+)
+_ASSET_ATTRS = {"img": "src", "script": "src", "source": "src", "audio": "src", "video": "src", "link": "href"}
+
+
+def _render_html_source(p: Path) -> bytes:
+    """Rewrites relative asset references (img/script/link/etc.) so they
+    resolve through this same /api/source endpoint instead of against
+    whatever the browser thinks the page's URL is -- otherwise every
+    relative path in the source file (e.g. "../../assets/x.jpg") would
+    404, since it's being served from /api/source?path=..., not from
+    its real location on disk."""
+    text = p.read_text(encoding="utf-8", errors="replace")
+    soup = BeautifulSoup(text, "lxml")
+    for tag_name, attr in _ASSET_ATTRS.items():
+        for tag in soup.find_all(tag_name):
+            value = tag.get(attr)
+            if not isinstance(value, str) or re.match(r"^([a-z][a-z0-9+.-]*:|//|#)", value, re.IGNORECASE):
+                continue  # absolute URL, scheme (data:, mailto:...), protocol-relative, or in-page anchor
+            if value.startswith("/"):
+                continue  # site-root-absolute -- can't resolve without knowing the real site root
+            resolved = (p.parent / value).resolve()
+            if resolved.is_file():
+                tag[attr] = f"/api/source?path={quote(str(resolved))}"
+    html = str(soup)
+    if not soup.find("head"):
+        # Bare fragment, not a full document -- BeautifulSoup's lxml
+        # parser still wraps it in <html><body>, so inject styling there.
+        html = html.replace("<body>", f"<body>{_FRAGMENT_STYLE}", 1)
+    return html.encode("utf-8")
 
 _ROUTE_NOTE_ID = re.compile(r"^/api/notes/(\d+)$")
 _ROUTE_LINK_ID = re.compile(r"^/api/links/(\d+)$")
@@ -150,6 +190,9 @@ class Handler(BaseHTTPRequestHandler):
             if p.suffix.lower() == ".jsonl":
                 body = _format_conversation(p).encode("utf-8")
                 content_type = "text/plain; charset=utf-8"
+            elif p.suffix.lower() in (".html", ".htm"):
+                body = _render_html_source(p)
+                content_type = "text/html; charset=utf-8"
             elif guessed_type is not None and not guessed_type.startswith("text/"):
                 body = p.read_bytes()
                 content_type = guessed_type

@@ -45,8 +45,41 @@ CONCEPT_SCHEMA = {
         "reasoning": {"type": "string", "description": "Step-by-step reasoning about whether a genuine, substantive connection exists between the two areas"},
         "has_substantive_connection": {"type": "boolean"},
         "proposed_concept": {"type": "string", "description": "A 3-5 sentence concrete cross-over idea. Empty string if has_substantive_connection is false."},
+        "idea_type": {
+            "type": "string", "enum": ["build", "writing"],
+            "description": "'build' if the connection is fundamentally a technique, system, or mechanism that could be "
+                            "implemented and tested. 'writing' if the real value is conceptual/pedagogical -- a genuine "
+                            "insight that would be best realized as an explanatory piece connecting the two areas for a "
+                            "reader (the way a piece might connect forensic science, sociology, or human anatomy to "
+                            "software engineering to illuminate both sides), not something there's actually a system to "
+                            "build. Ignored if has_substantive_connection is false.",
+        },
     },
-    "required": ["reasoning", "has_substantive_connection", "proposed_concept"],
+    "required": ["reasoning", "has_substantive_connection", "proposed_concept", "idea_type"],
+}
+
+WRITING_DESIGN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reasoning": {"type": "string", "description": "Reasoning about who this piece is really for and what makes the connection worth a reader's time, not just interesting to the model"},
+        "target_reader": {"type": "string", "description": "Who this piece is for -- what they're assumed to already know from one side, what they're being introduced to from the other"},
+        "hook": {"type": "string", "description": "The specific insight that makes connecting these two areas illuminating -- not 'both involve X', but what actually clicks once you see them side by side"},
+        "outline": {
+            "type": "array", "items": {"type": "string"},
+            "description": "3-6 section headings, each with a one-sentence summary of what it covers, in reading order",
+        },
+        "novelty_note": {
+            "type": "string",
+            "description": "Explicit take on whether this specific cross-domain connection is likely already well-trodden ground (a common analogy, an established course topic) or a genuinely fresh angle -- name which, and why",
+        },
+        "open_questions": {
+            "type": "array", "items": {"type": "string"},
+            "description": "2-4 concrete, checkable claims a literature/web search could support or refute -- typically "
+                           "'has this specific connection already been made elsewhere' and any factual claim about "
+                           "either domain the piece would rest on. Empty array only if genuinely nothing needs checking.",
+        },
+    },
+    "required": ["reasoning", "target_reader", "hook", "outline", "novelty_note", "open_questions"],
 }
 
 TEST_DESIGN_SCHEMA = {
@@ -128,7 +161,9 @@ AREA B: "{node_b['title']}" (project: {node_b['project']})
 Sample content:
 {sample_b}
 
-Think through whether there is a genuine, substantive connection here -- not just superficial keyword overlap. Be honest if the connection seems weak or contrived rather than forcing an idea to sound impressive; it is fine and useful to conclude there isn't a real connection."""
+Think through whether there is a genuine, substantive connection here -- not just superficial keyword overlap. Be honest if the connection seems weak or contrived rather than forcing an idea to sound impressive; it is fine and useful to conclude there isn't a real connection.
+
+If a connection exists, also decide whether it's a 'build' idea (a technique, system, or mechanism worth implementing and testing) or a 'writing' idea (a genuine conceptual bridge whose real value is in explaining it to a reader -- the kind of connection that makes a good teaching piece, not a system to build)."""
 
     def is_valid(r: dict) -> bool:
         if not str(r.get("reasoning", "")).strip():
@@ -151,21 +186,39 @@ Think through whether there is a genuine, substantive connection here -- not jus
 
     result = _ollama_generate_structured(prompt, CONCEPT_SCHEMA, is_valid)
     if not result:
-        return {"reasoning": None, "concept": None, "has_connection": False}
+        return {"reasoning": None, "concept": None, "has_connection": False, "idea_type": "build"}
     has_connection = bool(result.get("has_substantive_connection")) and bool(result.get("proposed_concept", "").strip())
     return {
         "reasoning": result.get("reasoning"),
         "concept": result.get("proposed_concept") if has_connection else None,
         "has_connection": has_connection,
+        "idea_type": result.get("idea_type") if result.get("idea_type") in ("build", "writing") else "build",
     }
 
 
-def _propose_test_design(concept: str) -> dict:
-    prompt = f"""A candidate cross-over idea has been proposed for a personal knowledge base:
+def _propose_test_design(node_a: dict, node_b: dict, sample_a: str, sample_b: str, concept: str) -> dict:
+    # The concept text alone is often just a punchy 5-15 word title, not
+    # the requested 3-5 sentence paragraph -- observed consistently across
+    # a whole batch, so a validation floor on its length just rejects
+    # almost everything this model produces rather than fixing anything.
+    # The actual failure this caused: with nothing but a title to go on,
+    # this stage would invent an entirely unrelated pair of domains from
+    # scratch rather than admit it had nothing concrete to work with. The
+    # real fix is re-grounding this stage in the same source material the
+    # concept was proposed from, not gating on the concept's word count.
+    prompt = f"""A candidate cross-over idea has been proposed for a personal knowledge base, connecting these two areas:
 
-{concept}
+AREA A: "{node_a['title']}" (project: {node_a['project']})
+Sample content:
+{sample_a}
 
-Design a concrete, minimal system to test this idea -- something small enough to actually build and run, not a research program.
+AREA B: "{node_b['title']}" (project: {node_b['project']})
+Sample content:
+{sample_b}
+
+PROPOSED CONNECTION: {concept}
+
+Design a concrete, minimal system to test this idea -- something small enough to actually build and run, not a research program. Ground it in the actual content of area A and B above, not just the connection's headline.
 
 You have no ability to search the web or check literature -- if the idea's plausibility depends on something you cannot verify from first principles alone (whether prior art already exists, whether a cited technique actually behaves the way assumed, whether a claimed effect is established or contested), name that explicitly as an open question rather than asserting it either way."""
 
@@ -186,6 +239,51 @@ You have no ability to search the web or check literature -- if the idea's plaus
         f"- **What to build:** {result.get('what_to_build', '')}\n"
         f"- **Success metrics:** {result.get('success_metrics', '')}\n"
         f"- **How to falsify it:** {result.get('how_to_falsify', '')}"
+    )
+    return {
+        "reasoning": result.get("reasoning"),
+        "design": design,
+        "open_questions": result.get("open_questions") or [],
+    }
+
+
+def _propose_writing_design(node_a: dict, node_b: dict, sample_a: str, sample_b: str, concept: str) -> dict:
+    # See _propose_test_design's comment: the concept string alone is
+    # usually just a title, so this stage is re-grounded in the same
+    # source material rather than left to invent domains from a headline.
+    prompt = f"""A candidate cross-domain connection has been proposed for a personal knowledge base, judged better suited to an explanatory piece than a system to build. It connects these two areas:
+
+AREA A: "{node_a['title']}" (project: {node_a['project']})
+Sample content:
+{sample_a}
+
+AREA B: "{node_b['title']}" (project: {node_b['project']})
+Sample content:
+{sample_b}
+
+PROPOSED CONNECTION: {concept}
+
+Plan the piece: who it's for, the specific insight that makes the connection worth a reader's time (not just "both involve X"), and an outline in reading order. Ground it in the actual content of area A and B above, not just the connection's headline.
+
+You have no ability to search the web or check literature -- if the piece's value depends on something you cannot verify from first principles alone (whether this specific connection has already been made elsewhere, whether a claimed fact about either domain is actually accurate), name that explicitly as an open question rather than asserting it either way. Also give an honest take on novelty: is this a well-trodden analogy, or a genuinely fresh angle -- and say why."""
+
+    def is_valid(r: dict) -> bool:
+        # Same rationale as _propose_test_design's floor: a schema-valid
+        # but content-free placeholder answer is worse than a retry.
+        fields = ("reasoning", "target_reader", "hook", "novelty_note")
+        if not all(len(str(r.get(f, "")).split()) >= 8 for f in fields):
+            return False
+        return isinstance(r.get("outline"), list) and len(r["outline"]) >= 2
+
+    result = _ollama_generate_structured(prompt, WRITING_DESIGN_SCHEMA, is_valid)
+    if not result:
+        return {"reasoning": None, "design": None, "open_questions": []}
+    outline = "\n".join(f"  {i}. {section}" for i, section in enumerate(result.get("outline") or [], 1))
+    design = (
+        f"- **Target reader:** {result.get('target_reader', '')}\n"
+        f"- **Hook:** {result.get('hook', '')}\n"
+        f"- **Outline:**\n{outline}\n"
+        f"- **Novelty:** {result.get('novelty_note', '')}"
     )
     return {
         "reasoning": result.get("reasoning"),
@@ -222,10 +320,15 @@ def run_synthesis(limit: int = 8, offset: int = 0, graph_path: str = graph_mod.D
                               "reasoning": concept_result["reasoning"]})
             continue
 
-        print("      -> concept found, designing a test for it...", flush=True)
-        design_result = _propose_test_design(concept_result["concept"])
+        idea_type = concept_result["idea_type"]
+        if idea_type == "writing":
+            print("      -> concept found (writing idea), planning the piece...", flush=True)
+            design_result = _propose_writing_design(node_a, node_b, sample_a, sample_b, concept_result["concept"])
+        else:
+            print("      -> concept found (build idea), designing a test for it...", flush=True)
+            design_result = _propose_test_design(node_a, node_b, sample_a, sample_b, concept_result["concept"])
         accepted.append({
-            "gap": gap, "node_a": node_a, "node_b": node_b,
+            "gap": gap, "node_a": node_a, "node_b": node_b, "idea_type": idea_type,
             "concept_reasoning": concept_result["reasoning"], "concept": concept_result["concept"],
             "design_reasoning": design_result["reasoning"], "design": design_result["design"],
             "open_questions": design_result["open_questions"],
@@ -264,6 +367,7 @@ def _update_synthesis_index(report_path: Path, accepted: list[dict], rejected: l
             # this to "needs_review" in place, never the other way.
             "status": "accepted",
             "title": f"{item['node_a']['title']} <-> {item['node_b']['title']}",
+            "idea_type": item.get("idea_type", "build"),
         })
     for item in rejected:
         entries.append({
@@ -313,10 +417,12 @@ def _write_report(accepted: list[dict], rejected: list[dict]) -> Path:
 
     for i, item in enumerate(accepted, 1):
         a, b, gap = item["node_a"], item["node_b"], item["gap"]
+        idea_type = item.get("idea_type", "build")
+        design_heading = "Writing Plan" if idea_type == "writing" else "Test Design"
         lines += [
             f"## Idea {i}: {a['title']} <-> {b['title']}",
             "",
-            f"**Areas:** `{a['title']}` ({a['project']}) and `{b['title']}` ({b['project']})  ",
+            f"**Type:** {idea_type} | **Areas:** `{a['title']}` ({a['project']}) and `{b['title']}` ({b['project']})  ",
             f"**Gap score:** {gap['gap_score']:.3f} | **Pair similarity:** {gap['pair_similarity']:.3f}",
             "",
             "### Proposed Concept",
@@ -325,10 +431,10 @@ def _write_report(accepted: list[dict], rejected: list[dict]) -> Path:
             "### Reasoning (concept)",
             item["concept_reasoning"] or "(none captured)",
             "",
-            "### Test Design",
+            f"### {design_heading}",
             item["design"] or "(none captured)",
             "",
-            "### Reasoning (test design)",
+            f"### Reasoning ({design_heading.lower()})",
             item["design_reasoning"] or "(none captured)",
             "",
             "### Open Questions for External Verification",

@@ -411,10 +411,11 @@
     const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
     const lines = md.split("\n");
     const out = [];
-    let inList = false;
+    let listTag = null; // "ul" | "ol" | null
     let para = [];
     const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
-    const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+    const closeList = () => { if (listTag) { out.push(`</${listTag}>`); listTag = null; } };
+    const openList = (tag) => { if (listTag !== tag) { closeList(); out.push(`<${tag}>`); listTag = tag; } };
 
     for (const line of lines) {
       if (/^###\s+/.test(line)) { flushPara(); closeList(); out.push(`<h3>${inline(line.replace(/^###\s+/, ""))}</h3>`); continue; }
@@ -422,9 +423,15 @@
       if (/^#\s+/.test(line)) { flushPara(); closeList(); out.push(`<h1>${inline(line.replace(/^#\s+/, ""))}</h1>`); continue; }
       if (/^---\s*$/.test(line)) { flushPara(); closeList(); out.push("<hr>"); continue; }
       if (/^>\s?/.test(line)) { flushPara(); closeList(); out.push(`<blockquote>${inline(line.replace(/^>\s?/, ""))}</blockquote>`); continue; }
+      if (/^\d+\.\s+/.test(line)) {
+        flushPara();
+        openList("ol");
+        out.push(`<li>${inline(line.replace(/^\d+\.\s+/, ""))}</li>`);
+        continue;
+      }
       if (/^-\s+/.test(line)) {
         flushPara();
-        if (!inList) { out.push("<ul>"); inList = true; }
+        openList("ul");
         out.push(`<li>${inline(line.replace(/^-\s+/, ""))}</li>`);
         continue;
       }

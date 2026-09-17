@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import convo_miner, graph, miner, store
+from . import convo_miner, graph, miner, store, synthesis
 from .gpu import enable_gpu
 
 
@@ -87,6 +87,16 @@ def cmd_unmine(args):
     print(f"\nDeleted {n} chunks under {args.path}")
 
 
+def cmd_synthesize(args):
+    print(f"\nSynthesizing cross-domain ideas from gaps {args.offset+1}-{args.offset+args.limit} "
+          f"(ranked by gap score)...")
+    out_path = synthesis.run_synthesis(limit=args.limit, offset=args.offset)
+    print(f"\nReport written to {out_path}")
+    if not args.no_mine:
+        print("Mining the report into the 'synthesis' project...")
+        synthesis.mine_synthesis_dir()
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -130,6 +140,14 @@ def main():
 
     p_status = sub.add_parser("status", help="Show what's been mined")
     p_status.set_defaults(func=cmd_status)
+
+    p_synth = sub.add_parser(
+        "synthesize", help="Propose cross-domain ideas from the graph's own interpolation gaps"
+    )
+    p_synth.add_argument("--limit", type=int, default=8, help="Number of gaps to process (default: 8)")
+    p_synth.add_argument("--offset", type=int, default=0, help="Skip the top N gaps (for paging past already-processed ones)")
+    p_synth.add_argument("--no-mine", action="store_true", help="Don't auto-mine the report afterward")
+    p_synth.set_defaults(func=cmd_synthesize)
 
     p_prune = sub.add_parser("prune", help="Delete chunks for files that no longer exist on disk")
     p_prune.set_defaults(func=cmd_prune)

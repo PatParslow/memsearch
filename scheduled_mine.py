@@ -3,6 +3,11 @@ project plus all Claude Code conversations. Safe to run daily -- already-
 current files are skipped via content-hash comparison, so a re-run only
 does real work on what's actually changed.
 
+Also checks aisi.gov.uk for any new research papers or blog posts before
+mining (see aisi_source.py) and saves them under F:\\books\\aisi-research,
+so they're picked up by the ordinary F:\\books mine call right after --
+this keeps that corpus current without a separate schedule.
+
 Writes its own timestamped log under logs/ -- the scheduled task invokes
 this script directly with no shell redirection, so without this the only
 way to see what happened was having a terminal window open by chance.
@@ -19,6 +24,8 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from memsearch import aisi_source
 
 PROJECT_DIRS = [
     r"D:\Projects_Organized\parslow-soft-editorial",
@@ -77,6 +84,24 @@ def main() -> None:
         log_file.write(start_msg)
 
         failures = []
+
+        aisi_header = "\n=== fetch-aisi (check for new AISI papers/blog posts) ===\n"
+        print(aisi_header, end="", flush=True)
+        log_file.write(aisi_header)
+        log_file.flush()
+        aisi_result = aisi_source.fetch_new()
+        if aisi_result["error"]:
+            msg = f"  -> {aisi_result['error']}\n"
+            failures.append("fetch-aisi")
+        else:
+            msg = (f"  -> {aisi_result['new_papers']} new paper(s), {aisi_result['new_blogs']} new blog post(s), "
+                   f"{aisi_result['excluded_organisation']} Organisation post(s) excluded\n")
+        print(msg, end="", flush=True)
+        log_file.write(msg)
+        for line in aisi_result["log"]:
+            log_file.write(f"  {line}\n")
+        log_file.flush()
+
         for d in PROJECT_DIRS:
             args = ["mine", d]
             if d in EXCLUDE_DIRS:

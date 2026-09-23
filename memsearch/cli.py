@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import convo_miner, graph, miner, refine as refine_mod, store, synergy, synthesis, verify as verify_mod
+from . import aisi_source, convo_miner, graph, miner, refine as refine_mod, store, synergy, synthesis, verify as verify_mod
 from .gpu import enable_gpu
 
 
@@ -150,6 +150,20 @@ def cmd_decompose(args):
         print(f"  - Idea {child['idea_number']}: {child['title']}")
 
 
+def cmd_fetch_aisi(args):
+    result = aisi_source.fetch_new()
+    if result["error"]:
+        print(f"\nFailed: {result['error']}")
+        return
+    print(f"\nNew papers fetched: {result['new_papers']}")
+    print(f"New blog posts fetched: {result['new_blogs']}")
+    print(f"Blog posts excluded (Organisation): {result['excluded_organisation']}")
+    if args.verbose:
+        print()
+        for line in result["log"]:
+            print(f"  {line}")
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -190,6 +204,12 @@ def main():
     p_search.add_argument("--project", default=None)
     p_search.add_argument("--limit", type=int, default=5)
     p_search.set_defaults(func=cmd_search)
+
+    p_aisi = sub.add_parser(
+        "fetch-aisi", help="Fetch any new AI Security Institute papers/blog posts into F:\\books\\aisi-research"
+    )
+    p_aisi.add_argument("--verbose", action="store_true", help="Print the full per-item log")
+    p_aisi.set_defaults(func=cmd_fetch_aisi)
 
     p_status = sub.add_parser("status", help="Show what's been mined")
     p_status.set_defaults(func=cmd_status)

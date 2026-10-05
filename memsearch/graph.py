@@ -29,7 +29,7 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, to_tree
 from scipy.spatial import ConvexHull
 
-from . import store
+from . import blade, store
 
 DEFAULT_GRAPH_PATH = os.path.expanduser(r"~\.memsearch\graph.json")
 
@@ -309,14 +309,28 @@ def _find_interpolation_gaps(node_ids: list[str], titles: list[str], unit: np.nd
     return candidates[:top_n]
 
 
+MAX_SAMPLES_PER_CLUSTER = 3
+BLADE_SAMPLES_PER_RANK = {1: 1, 2: 6, 3: 8}
+
+
 def _find_extrapolation_gaps(node_ids: list[str], titles: list[str], unit: np.ndarray,
                               node_cluster: dict[int, int], clusters_out: list[dict],
                               keywords: list[list[str]], top_n: int) -> list[dict]:
-    """Per cluster, project a bit past its own most-outlying member and see
-    if anything in the whole corpus is close to that projected point --
-    ported from tools/site/find_doc_gaps.py:find_extrapolation_gaps
-    (vocabulary-labelling step omitted; frontier node's own keywords stand
-    in for a full TF-IDF vocabulary pass)."""
+    """Per cluster, build a k-blade (memsearch/blade.py) spanning its
+    several most-outlying members' outward directions -- not just the
+    single most-outlying one -- and sample several directions across that
+    region rather than one arbitrary ray past one member. A cluster
+    spreading in a genuinely 2D or 3D way previously collapsed to
+    whichever single frontier member happened to be most outlying; this
+    tests a handful of directions across the actual span instead, and can
+    surface more than one real gap from the same cluster. Rank-1 clusters
+    (too few members to define a region) degenerate to exactly today's
+    single-point behaviour.
+
+    Ported from tools/site/find_doc_gaps.py:find_extrapolation_gaps,
+    generalized from a single point to a region (vocabulary-labelling
+    step still omitted; a sample's own nearest boundary member's keywords
+    stand in for a full TF-IDF vocabulary pass)."""
     results = []
     for cluster in clusters_out:
         members = [i for i, ci in node_cluster.items() if ci == cluster["id"]]
@@ -327,30 +341,68 @@ def _find_extrapolation_gaps(node_ids: list[str], titles: list[str], unit: np.nd
         centroid_norm = centroid / max(np.linalg.norm(centroid), 1e-9)
 
         sims_to_centroid = member_vecs @ centroid_norm
-        frontier_idx = members[int(np.argmin(sims_to_centroid))]
-        frontier_vec = unit[frontier_idx]
+        # Most-outlying members first (ascending similarity-to-centroid) --
+        # these are what define the blade's spanning directions.
+        order = np.argsort(sims_to_centroid)
+        boundary_count = min(len(members), blade.MAX_BLADE_RANK + 1)
+        boundary_idxs = [members[int(k)] for k in order[:boundary_count]]
 
-        outward = frontier_vec - centroid_norm
-        if np.linalg.norm(outward) < 1e-9:
+        outward_vecs = []
+        for idx in boundary_idxs:
+            ov = unit[idx] - centroid_norm
+            if np.linalg.norm(ov) >= 1e-9:
+                outward_vecs.append(ov)
+        if not outward_vecs:
             continue
-        projected = centroid_norm + FRONTIER_EXTRAPOLATE * outward
-        projected /= max(np.linalg.norm(projected), 1e-9)
+        basis = blade.cluster_basis(np.array(outward_vecs))
+        rank = basis.shape[1]
+        n_samples = BLADE_SAMPLES_PER_RANK.get(rank, 1)
+        directions = blade.sample_blade_directions(basis, n_samples)
 
-        all_sims = unit @ projected
-        all_sims[frontier_idx] = -1.0
-        nearest_idx = int(np.argmax(all_sims))
-        nearest_sim = float(all_sims[nearest_idx])
+        frontier_idx = boundary_idxs[0]  # single most-outlying member, kept as the primary anchor
+        boundary_exclude = set(boundary_idxs)
 
-        results.append({
-            "gap_score": 1.0 - nearest_sim,
-            "cluster_id": cluster["id"], "cluster_label": cluster["label"],
-            "frontier_node": node_ids[frontier_idx], "frontier_title": titles[frontier_idx],
-            "frontier_keywords": keywords[frontier_idx][:4],
-            # See the matching comment in _find_interpolation_gaps -- same
-            # title-collision ambiguity, same fix (carry the real id).
-            "nearest_existing_node": node_ids[nearest_idx],
-            "nearest_existing": titles[nearest_idx], "nearest_existing_similarity": nearest_sim,
-        })
+        by_nearest: dict[int, dict] = {}
+        for direction in directions:
+            projected = centroid_norm + FRONTIER_EXTRAPOLATE * direction
+            proj_norm = np.linalg.norm(projected)
+            if proj_norm < 1e-9:
+                continue
+            projected /= proj_norm
+
+            all_sims = unit @ projected
+            for idx in boundary_exclude:
+                all_sims[idx] = -1.0
+            nearest_idx = int(np.argmax(all_sims))
+            nearest_sim = float(all_sims[nearest_idx])
+            # Keep only the best-scoring sample per distinct nearest match --
+            # several sampled directions converging on the same real node
+            # are the same gap found twice, not two different ones.
+            existing = by_nearest.get(nearest_idx)
+            if existing is None or nearest_sim < existing["nearest_existing_similarity"]:
+                by_nearest[nearest_idx] = {"nearest_idx": nearest_idx, "nearest_existing_similarity": nearest_sim}
+
+        cluster_samples = sorted(by_nearest.values(), key=lambda r: r["nearest_existing_similarity"])
+        for sample in cluster_samples[:MAX_SAMPLES_PER_CLUSTER]:
+            nearest_idx = sample["nearest_idx"]
+            results.append({
+                "gap_score": 1.0 - sample["nearest_existing_similarity"],
+                "cluster_id": cluster["id"], "cluster_label": cluster["label"],
+                "frontier_node": node_ids[frontier_idx], "frontier_title": titles[frontier_idx],
+                "frontier_keywords": keywords[frontier_idx][:4],
+                # See the matching comment in _find_interpolation_gaps -- same
+                # title-collision ambiguity, same fix (carry the real id).
+                "nearest_existing_node": node_ids[nearest_idx],
+                "nearest_existing": titles[nearest_idx],
+                "nearest_existing_similarity": sample["nearest_existing_similarity"],
+                # New fields (additive -- existing UI/CLI consumers only
+                # read the fields above and are unaffected): the region
+                # this sample came from, for the region-aware synthesis
+                # prompts in region_synthesis.py.
+                "blade_rank": rank,
+                "region_boundary_nodes": [node_ids[i] for i in boundary_idxs],
+                "region_boundary_titles": [titles[i] for i in boundary_idxs],
+            })
 
     results.sort(key=lambda r: r["gap_score"], reverse=True)
     return results[:top_n]

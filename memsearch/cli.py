@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import aisi_source, convo_miner, graph, miner, refine as refine_mod, store, synergy, synthesis, verify as verify_mod
+from . import aisi_source, convo_miner, graph, miner, refine as refine_mod, region_synthesis, store, synergy, synthesis, verify as verify_mod
 from .gpu import enable_gpu
 
 
@@ -92,6 +92,15 @@ def cmd_synthesize(args):
     print(f"\nSynthesizing cross-domain ideas from gaps {args.offset+1}-{args.offset+args.limit} "
           f"(ranked by gap score)...")
     out_path = synthesis.run_synthesis(limit=args.limit, offset=args.offset)
+    print(f"\nReport written to {out_path}")
+    if not args.no_mine:
+        print("Mining the report into the 'synthesis' project...")
+        synthesis.mine_synthesis_dir()
+
+
+def cmd_synthesize_region(args):
+    print(f"\nExploring the top {args.limit} extrapolation region(s) (mode={args.mode})...")
+    out_path = region_synthesis.run_region_synthesis(limit=args.limit, mode=args.mode)
     print(f"\nReport written to {out_path}")
     if not args.no_mine:
         print("Mining the report into the 'synthesis' project...")
@@ -221,6 +230,18 @@ def main():
     p_synth.add_argument("--offset", type=int, default=0, help="Skip the top N gaps (for paging past already-processed ones)")
     p_synth.add_argument("--no-mine", action="store_true", help="Don't auto-mine the report afterward")
     p_synth.set_defaults(func=cmd_synthesize)
+
+    p_synth_region = sub.add_parser(
+        "synthesize-region", help="Explore the graph's own blade-defined extrapolation regions for new concepts"
+    )
+    p_synth_region.add_argument("--limit", type=int, default=8, help="Number of regions (clusters) to process (default: 8)")
+    p_synth_region.add_argument("--mode", choices=["point", "region", "combined", "all"], default="all",
+                                 help="point: score each sampled direction's nearest neighbour as a pairwise connection. "
+                                      "region: describe the whole blade region qualitatively, no concrete anchor. "
+                                      "combined: region prompt grounded with point-mode's concrete reference points. "
+                                      "all (default): run all three.")
+    p_synth_region.add_argument("--no-mine", action="store_true", help="Don't auto-mine the report afterward")
+    p_synth_region.set_defaults(func=cmd_synthesize_region)
 
     p_prune = sub.add_parser("prune", help="Delete chunks for files that no longer exist on disk")
     p_prune.set_defaults(func=cmd_prune)

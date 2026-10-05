@@ -20,12 +20,15 @@ not something layered on top of a Python-level redirect."""
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from memsearch import aisi_source
+
+SYNTHESIS_DIR = Path(__file__).resolve().parent / "synthesis"
 
 PROJECT_DIRS = [
     r"D:\Projects_Organized\parslow-soft-editorial",
@@ -73,6 +76,34 @@ def run(args: list[str], log_file) -> int:
     return result.returncode
 
 
+def newest_report() -> Path | None:
+    reports = sorted(SYNTHESIS_DIR.glob("synthesis_*.md"), key=lambda p: p.stat().st_mtime)
+    return reports[-1] if reports else None
+
+
+def idea_numbers(report: Path) -> list[int]:
+    return [int(n) for n in re.findall(r"^## Idea (\d+):", report.read_text(encoding="utf-8"), flags=re.MULTILINE)]
+
+
+def run_synthesis(log_file) -> list[str]:
+    """Synthesis after the indexing: propose ideas from the graph's gaps, refine each one with the
+    local model (no paid calls), mine the finished report once, then scan for synergies."""
+    failures: list[str] = []
+    if run(["synthesize", "--no-mine"], log_file) != 0:
+        return ["synthesize"]
+    report = newest_report()
+    if report is None:
+        return ["synthesize (no report written)"]
+    for n in idea_numbers(report):
+        if run(["refine", str(report), str(n), "--refiner", "local", "--max-cost", "1.00", "--no-mine"], log_file) != 0:
+            failures.append(f"refine {n}")
+    if run(["mine", str(SYNTHESIS_DIR), "--project", "synthesis"], log_file) != 0:
+        failures.append("mine synthesis")
+    if run(["synergy"], log_file) != 0:
+        failures.append("synergy")
+    return failures
+
+
 def main() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
@@ -114,6 +145,8 @@ def main() -> None:
             failures.append("prune")
         if run(["graph", "build"], log_file) != 0:
             failures.append("graph build")
+
+        failures.extend(run_synthesis(log_file))
 
         if failures:
             done_msg = f"\nDone, with {len(failures)} failure(s): {failures}\n"

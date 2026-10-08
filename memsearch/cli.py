@@ -173,6 +173,31 @@ def cmd_fetch_aisi(args):
             print(f"  {line}")
 
 
+def cmd_remine_affected(args):
+    """Targeted 'patch' re-mine: find already-mined files whose stored
+    chunk count is >1 (the only ones the chunking-boundary fix can change
+    -- see store.source_file_summary) and re-chunk just those, instead of
+    a blind full re-mine of the whole corpus."""
+    summary = store.source_file_summary()
+    affected = sorted(
+        sf for sf, info in summary.items()
+        if info["count"] > 1
+        and info.get("kind") != "conversation"  # convo_miner never calls chunking.py
+        and (not args.project or info["project"] == args.project)
+    )
+    print(f"\n{len(summary)} distinct source files currently mined; "
+          f"{len(affected)} have >1 stored chunk, go through chunking.py, "
+          f"and may be affected by the chunking fix.")
+    if args.list_only:
+        for sf in affected:
+            print(f"  {sf}  ({summary[sf]['count']} chunks)")
+        return
+    stats = miner.mine_files(affected, dry_run=args.dry_run)
+    print(f"\nRe-chunked {stats['processed']} files, {stats['chunks']} chunks filed")
+    print(f"Not found in store: {stats['not_found']}")
+    print(f"Binary/unreadable (skipped): {stats['skipped_binary']}")
+
+
 def cmd_status(args):
     breakdown = store.status_breakdown()
     total = sum(sum(cats.values()) for cats in breakdown.values())
@@ -222,6 +247,15 @@ def main():
 
     p_status = sub.add_parser("status", help="Show what's been mined")
     p_status.set_defaults(func=cmd_status)
+
+    p_remine = sub.add_parser(
+        "remine-affected",
+        help="Re-chunk only already-mined files a chunking-logic change can actually affect (chunk count >1)",
+    )
+    p_remine.add_argument("--project", help="Restrict to one project")
+    p_remine.add_argument("--list-only", action="store_true", help="List affected files without re-mining them")
+    p_remine.add_argument("--dry-run", action="store_true", help="Report what would be re-chunked without storing it")
+    p_remine.set_defaults(func=cmd_remine_affected)
 
     p_synth = sub.add_parser(
         "synthesize", help="Propose cross-domain ideas from the graph's own interpolation gaps"

@@ -149,6 +149,40 @@ def prune_missing(store_path: str = DEFAULT_STORE_PATH) -> dict:
     }
 
 
+def source_file_summary(store_path: str = DEFAULT_STORE_PATH) -> dict[str, dict]:
+    """source_file -> {"count": n, "project": p, "kind": k}, one pass over
+    the whole store. Used to find which already-mined files a chunking-
+    logic change can actually affect, without re-reading or re-chunking
+    anything: a file currently stored as exactly one chunk went through
+    _split_bounded's single-piece path, which is provably unchanged by the
+    word-boundary and overlap fix (see
+    test_split_bounded_adds_no_overlap_when_text_fits_in_one_piece) -- only
+    files with more than one stored chunk need a re-mine. kind is carried
+    along too: convo_miner.py stamps "conversation" and has its own
+    chunking entirely separate from chunking.py (chunk_file is never
+    called on a .jsonl transcript), so those files are never affected by
+    a chunking.py change regardless of chunk count. Project is carried
+    along in the same scan so a project filter doesn't need a separate
+    per-file lookup."""
+    col = get_collection(store_path)
+    total = col.count()
+    batch_size = 5000
+    offset = 0
+    summary: dict[str, dict] = {}
+    while offset < total:
+        batch = col.get(limit=batch_size, offset=offset, include=["metadatas"])
+        for m in batch["metadatas"]:
+            sf = m.get("source_file")
+            if not sf:
+                continue
+            entry = summary.setdefault(
+                sf, {"count": 0, "project": m.get("project"), "kind": m.get("kind")}
+            )
+            entry["count"] += 1
+        offset += batch_size
+    return summary
+
+
 def total_count(store_path: str = DEFAULT_STORE_PATH) -> int:
     col = get_collection(store_path)
     return col.count()

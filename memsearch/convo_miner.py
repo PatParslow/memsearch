@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
+import time
 from pathlib import Path
 
 from . import store
@@ -118,7 +120,18 @@ def mine_convos(
     claude_projects_dir: str = CLAUDE_PROJECTS_DIR,
     store_path: str = store.DEFAULT_STORE_PATH,
     dry_run: bool = False,
+    force: bool = False,
+    progress_every: int = 0,
 ) -> dict:
+    """`force=True` bypasses the unchanged-content-hash skip for every
+    session, the same purpose as mine_project's force_paths/force_all --
+    needed because a chunking-LOGIC change here (see chunk_exchanges) is
+    otherwise invisible to a plain re-mine of transcripts whose bytes
+    haven't changed. `progress_every`: 0 (default) prints nothing; a
+    positive value prints an elapsed-time status line every that many
+    sessions SEEN, same convention as miner.mine_files/contextual's
+    build_or_update."""
+    t0 = time.monotonic()
     root = Path(claude_projects_dir)
     col = None if dry_run else store.get_collection(store_path)
     stats = {"sessions_processed": 0, "sessions_unchanged": 0, "chunks": 0}
@@ -126,6 +139,7 @@ def mine_convos(
     if not root.is_dir():
         return stats
 
+    seen = 0
     for project_dir in root.iterdir():
         if not project_dir.is_dir():
             continue
@@ -134,6 +148,12 @@ def mine_convos(
         # subagent transcripts live one level deeper under
         # <session-id>/subagents/agent-*.jsonl -- rglob catches both.
         for session_file in project_dir.rglob("*.jsonl"):
+            seen += 1
+            if progress_every and seen % progress_every == 0:
+                elapsed = time.monotonic() - t0
+                print(f"  [{elapsed:7.1f}s] seen {seen:,} sessions "
+                      f"(processed {stats['sessions_processed']:,}, unchanged {stats['sessions_unchanged']:,}, "
+                      f"chunks {stats['chunks']:,})", file=sys.stderr, flush=True)
             try:
                 raw = session_file.read_bytes()
             except OSError:
@@ -145,7 +165,7 @@ def mine_convos(
             # (e.g. two aborted, near-empty sessions) collide.
             path_hash = hashlib.sha256(source_file.encode("utf-8")).hexdigest()[:12]
 
-            if not dry_run and store.already_current(col, source_file, content_hash):
+            if not dry_run and not force and store.already_current(col, source_file, content_hash):
                 stats["sessions_unchanged"] += 1
                 continue
 

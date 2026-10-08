@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
+import time
 from pathlib import Path
 
 from . import chunking, store
@@ -151,6 +153,7 @@ def mine_files(
     paths: list[str],
     store_path: str = store.DEFAULT_STORE_PATH,
     dry_run: bool = False,
+    progress_every: int = 0,
 ) -> dict:
     """Re-chunk and re-store a specific list of already-mined source files,
     bypassing the unchanged-content-hash skip -- without needing their
@@ -158,14 +161,26 @@ def mine_files(
     back from its own existing chunk metadata rather than re-derived from a
     walk, so the list can span several different mined projects at once.
     The counterpart to mine_project's whole-directory walk, for a targeted
-    "patch" re-mine of only the files a chunking change actually affects."""
+    "patch" re-mine of only the files a chunking change actually affects.
+
+    `progress_every`: 0 (default) prints nothing; a positive value prints
+    an elapsed-time status line every that many files SEEN (same
+    convention as contextual's build_or_update) -- this list can include
+    large PDFs, so a real re-mine over thousands of them needs to be
+    told "slow" from "stuck" rather than run on faith."""
+    t0 = time.monotonic()
     col = store.get_collection(store_path)
     stats = {
         "processed": 0, "skipped_unchanged": 0, "skipped_binary": 0,
         "chunks": 0, "not_found": 0, "wrong_miner": 0,
     }
 
-    for sf in paths:
+    for seen, sf in enumerate(paths, start=1):
+        if progress_every and seen % progress_every == 0:
+            elapsed = time.monotonic() - t0
+            print(f"  [{elapsed:7.1f}s] seen {seen:,}/{len(paths):,} files "
+                  f"(processed {stats['processed']:,}, chunks {stats['chunks']:,})",
+                  file=sys.stderr, flush=True)
         existing = col.get(where={"source_file": sf}, limit=1, include=["metadatas"])
         if not existing["ids"]:
             stats["not_found"] += 1

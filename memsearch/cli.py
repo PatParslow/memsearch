@@ -21,7 +21,9 @@ def cmd_mine(args):
 
 
 def cmd_mine_convos(args):
-    stats = convo_miner.mine_convos(dry_run=args.dry_run)
+    stats = convo_miner.mine_convos(
+        dry_run=args.dry_run, force=args.force, progress_every=args.progress_every,
+    )
     print(f"\nProcessed {stats['sessions_processed']} sessions, {stats['chunks']} chunks filed")
     print(f"Unchanged (skipped): {stats['sessions_unchanged']}")
 
@@ -192,7 +194,7 @@ def cmd_remine_affected(args):
         for sf in affected:
             print(f"  {sf}  ({summary[sf]['count']} chunks)")
         return
-    stats = miner.mine_files(affected, dry_run=args.dry_run)
+    stats = miner.mine_files(affected, dry_run=args.dry_run, progress_every=args.progress_every)
     print(f"\nRe-chunked {stats['processed']} files, {stats['chunks']} chunks filed")
     print(f"Not found in store: {stats['not_found']}")
     print(f"Binary/unreadable (skipped): {stats['skipped_binary']}")
@@ -231,6 +233,11 @@ def main():
 
     p_convos = sub.add_parser("mine-convos", help="Mine Claude Code conversation transcripts")
     p_convos.add_argument("--dry-run", action="store_true")
+    p_convos.add_argument("--force", action="store_true",
+                           help="Re-chunk every session even if its content hash hasn't changed "
+                                "(needed to pick up a chunking-logic change, e.g. the overlap/size-bound fix)")
+    p_convos.add_argument("--progress-every", type=int, default=0, dest="progress_every",
+                           help="Print an elapsed-time status line every N sessions seen (default: 0, silent)")
     p_convos.set_defaults(func=cmd_mine_convos)
 
     p_search = sub.add_parser("search", help="Semantic search across mined content")
@@ -255,6 +262,8 @@ def main():
     p_remine.add_argument("--project", help="Restrict to one project")
     p_remine.add_argument("--list-only", action="store_true", help="List affected files without re-mining them")
     p_remine.add_argument("--dry-run", action="store_true", help="Report what would be re-chunked without storing it")
+    p_remine.add_argument("--progress-every", type=int, default=0, dest="progress_every",
+                           help="Print an elapsed-time status line every N files seen (default: 0, silent)")
     p_remine.set_defaults(func=cmd_remine_affected)
 
     p_synth = sub.add_parser(

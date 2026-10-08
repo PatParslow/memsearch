@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from . import store
+from .chunking import MAX_CHUNK_SIZE, overlap_prefix, split_bounded
 
 CLAUDE_PROJECTS_DIR = os.path.expanduser(r"~\.claude\projects")
 
@@ -66,7 +67,28 @@ def parse_session(path: Path) -> list[tuple[str, str]]:
 
 
 def chunk_exchanges(messages: list[tuple[str, str]]) -> list[str]:
-    chunks = []
+    """One chunk per exchange pair, with the same two protections
+    chunking.py's split_bounded already gives project files:
+
+    1. Size-bounded: an exchange with no bound at all (the original
+       behaviour here) can run far past the embedding model's own
+       256-token truncation limit (see gpu/store.py's ONNXMiniLM_L6_V2) --
+       a long assistant response full of code becomes one giant chunk
+       whose embedding reflects only its first ~256 tokens, silently,
+       even though the full text is still stored and returned. Each
+       exchange is now run through split_bounded, same as any other
+       oversized block of text.
+
+    2. Overlapping: split_bounded only adds overlap BETWEEN pieces it
+       itself splits from the SAME exchange. The far more common boundary
+       here is exchange-to-exchange (one user/assistant pair to the
+       next), which had no overlap at all -- real conversational context
+       (anaphora, a continuing thread) routinely spans that boundary.
+       Each exchange's first piece is prefixed with a word-overlap tail
+       from the PREVIOUS exchange's last piece, the same mechanism and
+       bound (MIN_OVERLAP_WORDS) chunking.py uses.
+    """
+    raw = []
     i = 0
     while i < len(messages):
         role, text = messages[i]
@@ -75,11 +97,21 @@ def chunk_exchanges(messages: list[tuple[str, str]]) -> list[str]:
             if i + 1 < len(messages) and messages[i + 1][0] == "assistant":
                 piece += f"\n\n{messages[i + 1][1]}"
                 i += 1
-            chunks.append(piece)
+            raw.append(piece)
         else:
-            chunks.append(text)
+            raw.append(text)
         i += 1
-    return [c for c in chunks if len(c.strip()) >= 40]
+
+    kept_raw = [c for c in raw if len(c.strip()) >= 40]
+    all_pieces: list[str] = []
+    for raw_piece in kept_raw:
+        sub_pieces = split_bounded(raw_piece, max_size=MAX_CHUNK_SIZE)
+        if all_pieces and sub_pieces:
+            tail = overlap_prefix(all_pieces[-1])
+            if tail:
+                sub_pieces[0] = f"{tail}\n\n{sub_pieces[0]}"
+        all_pieces.extend(sub_pieces)
+    return all_pieces
 
 
 def mine_convos(

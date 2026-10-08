@@ -20,17 +20,17 @@ from memsearch import chunking
 
 def test_overlap_prefix_returns_last_n_words():
     text = "one two three four five six seven eight nine ten eleven twelve thirteen"
-    prefix = chunking._overlap_prefix(text, min_words=3)
+    prefix = chunking.overlap_prefix(text, min_words=3)
     assert prefix == "eleven twelve thirteen"
 
 
 def test_overlap_prefix_handles_text_shorter_than_min_words():
     text = "only three words"
-    assert chunking._overlap_prefix(text, min_words=12) == "only three words"
+    assert chunking.overlap_prefix(text, min_words=12) == "only three words"
 
 
 def test_overlap_prefix_empty_text_is_empty():
-    assert chunking._overlap_prefix("", min_words=5) == ""
+    assert chunking.overlap_prefix("", min_words=5) == ""
 
 
 def test_cut_at_word_boundary_never_splits_a_word():
@@ -55,7 +55,7 @@ def test_cut_at_word_boundary_falls_back_to_hard_cut_for_one_giant_token():
 
 def test_split_bounded_adds_no_overlap_when_text_fits_in_one_piece():
     text = "A short paragraph that easily fits in one chunk."
-    pieces = chunking._split_bounded(text, max_size=1200)
+    pieces = chunking.split_bounded(text, max_size=1200)
     assert pieces == [text]
 
 
@@ -63,11 +63,11 @@ def test_split_bounded_prepends_overlap_to_later_pieces():
     para_a = "Alpha " * 50  # long enough to force a split on its own
     para_b = "Beta " * 50
     text = f"{para_a.strip()}\n\n{para_b.strip()}"
-    pieces = chunking._split_bounded(text, max_size=len(para_a) + 10)
+    pieces = chunking.split_bounded(text, max_size=len(para_a) + 10)
     assert len(pieces) >= 2
     # the second piece must start with trailing words from the first piece's
     # own tail (the overlap), not just its own paragraph's content.
-    first_tail = chunking._overlap_prefix(pieces[0])
+    first_tail = chunking.overlap_prefix(pieces[0])
     assert pieces[1].startswith(first_tail)
 
 
@@ -79,7 +79,7 @@ def test_split_bounded_reproduces_and_fixes_the_real_mid_word_bug():
     been corrupted must now appear WHOLE in at least one piece."""
     filler_a = "word " * 230  # pushes well past a small max_size
     long_paragraph = f"{filler_a}essential for survival students should already be conversant"
-    pieces = chunking._split_bounded(long_paragraph, max_size=1200)
+    pieces = chunking.split_bounded(long_paragraph, max_size=1200)
     assert any("students" in piece for piece in pieces)
     # and specifically: no piece contains a truncated fragment of it
     # standing alone where "students" should be (the corrupted "8tu"/

@@ -92,7 +92,7 @@ def _cut_at_word_boundary(p: str, max_size: int) -> list[str]:
     return pieces
 
 
-def _overlap_prefix(text: str, min_words: int = MIN_OVERLAP_WORDS) -> str:
+def overlap_prefix(text: str, min_words: int = MIN_OVERLAP_WORDS) -> str:
     """Last `min_words` whitespace-separated words of `text` (fewer if
     `text` is shorter) -- prepended to the NEXT piece so a word or
     sentence is never invisibly split across a chunk boundary with no
@@ -101,12 +101,12 @@ def _overlap_prefix(text: str, min_words: int = MIN_OVERLAP_WORDS) -> str:
     return " ".join(words[-min_words:]) if words else ""
 
 
-def _split_bounded(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
+def split_bounded(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
     """Split a block of text into <= max_size pieces on paragraph/line
     boundaries where possible (falling back to a word-boundary-aware
     hard cut -- see _cut_at_word_boundary), then prefix every piece
     after the first with a bounded word-overlap from the end of the
-    previous piece (see _overlap_prefix).
+    previous piece (see overlap_prefix).
 
     Real bug found and fixed, confirmed on the real corpus: without
     overlap, a word or sentence straddling ANY chunk boundary -- not
@@ -144,7 +144,7 @@ def _split_bounded(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
         return pieces
     stitched = [pieces[0]]
     for i in range(1, len(pieces)):
-        overlap = _overlap_prefix(pieces[i - 1])
+        overlap = overlap_prefix(pieces[i - 1])
         stitched.append(f"{overlap} {pieces[i]}" if overlap else pieces[i])
     return stitched
 
@@ -188,7 +188,7 @@ def chunk_html(text: str) -> list[str]:
 
     chunks: list[str] = []
     for s in sections:
-        chunks.extend(_split_bounded(s))
+        chunks.extend(split_bounded(s))
     return [c for c in chunks if len(c) >= MIN_CHUNK_SIZE and not looks_like_embedded_blob(c)]
 
 
@@ -198,7 +198,7 @@ def chunk_markdown(text: str) -> list[str]:
     for s in sections:
         if looks_like_embedded_blob(s):
             continue
-        chunks.extend(_split_bounded(s))
+        chunks.extend(split_bounded(s))
     return [c for c in chunks if len(c) >= MIN_CHUNK_SIZE and not looks_like_embedded_blob(c)]
 
 
@@ -246,7 +246,7 @@ def chunk_pdf(path: Path) -> list[str]:
     books+papers corpus: 82.99% of adjacent chunk-boundary pairs showed
     no sentence-ending punctuation at the seam, including literal
     mid-word corruption. De-paginating first, combined with
-    _split_bounded's own word-boundary-aware cut and overlap (see
+    split_bounded's own word-boundary-aware cut and overlap (see
     there), fixes both page-break splits and within-page oversized-
     paragraph splits the same way.
     """
@@ -268,7 +268,7 @@ def chunk_pdf(path: Path) -> list[str]:
     full_text = normalize_pdf_text("\n".join(t for t in raw_pages if t.strip()))
 
     chunks: list[str] = []
-    for piece in _split_bounded(full_text):
+    for piece in split_bounded(full_text):
         if len(piece) < MIN_CHUNK_SIZE or looks_like_embedded_blob(piece):
             continue
         chunks.append(piece)

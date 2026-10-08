@@ -39,13 +39,98 @@ def _walk(root: Path, gi: GitignoreMatcher, exclude_dirs: set[str]):
             yield path
 
 
+def _process_file(
+    path: Path,
+    project: str,
+    category: str,
+    col,
+    dry_run: bool,
+    force: bool,
+    stats: dict,
+) -> None:
+    """Chunk and (unless dry_run) store one file under the given
+    project/category, honouring the same skip rules mine_project always
+    has -- shared so mine_files (re-mining a specific file list without a
+    directory walk) can't drift from mine_project's own per-file logic."""
+    if chunking.is_binary_extension(path):
+        stats["skipped_binary"] += 1
+        return
+    is_pdf = path.suffix.lower() in chunking.PDF_EXTENSIONS
+    try:
+        if path.stat().st_size > MAX_FILE_SIZE and not is_pdf:
+            return
+        raw = path.read_bytes()
+    except OSError:
+        return
+    # PDFs are binary by nature (null bytes are routine) and are
+    # extracted via PyMuPDF in chunk_pdf(), not decoded as UTF-8 here.
+    if not is_pdf and b"\x00" in raw[:1024]:
+        stats["skipped_binary"] += 1
+        return
+
+    content_hash = hashlib.sha256(raw).hexdigest()[:16]
+    source_file = str(path)
+    # Chunk ids need the path baked in, not just content_hash: two
+    # different files with byte-identical content (seen in practice with
+    # generated .dropcap_cache SVGs) produce the same content_hash, and
+    # an id keyed on content_hash alone collides across them -- the
+    # second file's add() then silently no-ops against the first file's
+    # already-stored id instead of being indexed under its own path,
+    # every single mining run forever (found via ~8,600 "Add of existing
+    # embedding ID" warnings in one scheduled run's log).
+    path_hash = hashlib.sha256(source_file.encode("utf-8")).hexdigest()[:12]
+
+    if not dry_run and not force and store.already_current(col, source_file, content_hash):
+        stats["skipped_unchanged"] += 1
+        return
+
+    text = None
+    if not is_pdf:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            stats["skipped_binary"] += 1
+            return
+
+    pieces = chunking.chunk_file(path, text)
+    stats["processed"] += 1
+    stats["chunks"] += len(pieces)
+
+    if dry_run:
+        return
+
+    chunks = [
+        {
+            "id": f"{path_hash}-{content_hash}-{i}",
+            "text": piece,
+            "metadata": {
+                "project": project,
+                "category": category,
+                "source_file": source_file,
+                "content_hash": content_hash,
+                "mtime": path.stat().st_mtime,
+                "kind": "prose" if path.suffix.lower() in (".html", ".htm", ".md", ".pdf") else "code",
+            },
+        }
+        for i, piece in enumerate(pieces)
+    ]
+    store.replace_file(col, source_file, chunks)
+
+
 def mine_project(
     directory: str,
     project: str | None = None,
     store_path: str = store.DEFAULT_STORE_PATH,
     dry_run: bool = False,
     exclude_dirs: set[str] | None = None,
+    force_paths: set[str] | None = None,
+    force_all: bool = False,
 ) -> dict:
+    """Walk `directory` and mine every file found, same as always, except
+    that any file in `force_paths` (or every file, if `force_all`) is
+    re-chunked and re-stored even when its content hash hasn't changed --
+    the hook a chunking-logic change (not a content change) needs to take
+    effect on already-mined files."""
     root = Path(directory).expanduser().resolve()
     project = project or root.name
     gi = GitignoreMatcher(root)
@@ -55,68 +140,45 @@ def mine_project(
     stats = {"processed": 0, "skipped_unchanged": 0, "skipped_binary": 0, "chunks": 0}
 
     for path in _walk(root, gi, exclude_dirs):
-        if chunking.is_binary_extension(path):
-            stats["skipped_binary"] += 1
-            continue
-        is_pdf = path.suffix.lower() in chunking.PDF_EXTENSIONS
-        try:
-            if path.stat().st_size > MAX_FILE_SIZE and not is_pdf:
-                continue
-            raw = path.read_bytes()
-        except OSError:
-            continue
-        # PDFs are binary by nature (null bytes are routine) and are
-        # extracted via PyMuPDF in chunk_pdf(), not decoded as UTF-8 here.
-        if not is_pdf and b"\x00" in raw[:1024]:
-            stats["skipped_binary"] += 1
-            continue
-
-        content_hash = hashlib.sha256(raw).hexdigest()[:16]
         source_file = str(path)
-        # Chunk ids need the path baked in, not just content_hash: two
-        # different files with byte-identical content (seen in practice with
-        # generated .dropcap_cache SVGs) produce the same content_hash, and
-        # an id keyed on content_hash alone collides across them -- the
-        # second file's add() then silently no-ops against the first file's
-        # already-stored id instead of being indexed under its own path,
-        # every single mining run forever (found via ~8,600 "Add of existing
-        # embedding ID" warnings in one scheduled run's log).
-        path_hash = hashlib.sha256(source_file.encode("utf-8")).hexdigest()[:12]
+        force = force_all or (force_paths is not None and source_file in force_paths)
+        _process_file(path, project, _category(root, path), col, dry_run, force, stats)
 
-        if not dry_run and store.already_current(col, source_file, content_hash):
-            stats["skipped_unchanged"] += 1
+    return stats
+
+
+def mine_files(
+    paths: list[str],
+    store_path: str = store.DEFAULT_STORE_PATH,
+    dry_run: bool = False,
+) -> dict:
+    """Re-chunk and re-store a specific list of already-mined source files,
+    bypassing the unchanged-content-hash skip -- without needing their
+    original project directory root. Each file's project/category is read
+    back from its own existing chunk metadata rather than re-derived from a
+    walk, so the list can span several different mined projects at once.
+    The counterpart to mine_project's whole-directory walk, for a targeted
+    "patch" re-mine of only the files a chunking change actually affects."""
+    col = store.get_collection(store_path)
+    stats = {
+        "processed": 0, "skipped_unchanged": 0, "skipped_binary": 0,
+        "chunks": 0, "not_found": 0, "wrong_miner": 0,
+    }
+
+    for sf in paths:
+        existing = col.get(where={"source_file": sf}, limit=1, include=["metadatas"])
+        if not existing["ids"]:
+            stats["not_found"] += 1
             continue
-
-        text = None
-        if not is_pdf:
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                stats["skipped_binary"] += 1
-                continue
-
-        pieces = chunking.chunk_file(path, text)
-        stats["processed"] += 1
-        stats["chunks"] += len(pieces)
-
-        if dry_run:
+        meta0 = existing["metadatas"][0]
+        if meta0.get("kind") == "conversation":
+            # Stamped by convo_miner.py, which never calls chunking.py --
+            # re-chunking it here with chunking.chunk_file would silently
+            # corrupt a conversation transcript's chunks, not refresh them.
+            stats["wrong_miner"] += 1
             continue
-
-        chunks = [
-            {
-                "id": f"{path_hash}-{content_hash}-{i}",
-                "text": piece,
-                "metadata": {
-                    "project": project,
-                    "category": _category(root, path),
-                    "source_file": source_file,
-                    "content_hash": content_hash,
-                    "mtime": path.stat().st_mtime,
-                    "kind": "prose" if path.suffix.lower() in (".html", ".htm", ".md", ".pdf") else "code",
-                },
-            }
-            for i, piece in enumerate(pieces)
-        ]
-        store.replace_file(col, source_file, chunks)
+        project = meta0.get("project", "?")
+        category = meta0.get("category", "general")
+        _process_file(Path(sf), project, category, col, dry_run, force=True, stats=stats)
 
     return stats
